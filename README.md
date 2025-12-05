@@ -23,7 +23,7 @@ Devices ─Socket/WebSocket─> Gateway Server ─NATS client─> JetStream Cons
 
 ### Prerequisites
 
-- .NET 8.0 or later
+- .NET 10.0 or later
 - NATS Server with JetStream enabled
 
 ### Configuration
