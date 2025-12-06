@@ -1,0 +1,6 @@
+@NatsWebSocketBridge.Gateway_HostAddress = http://localhost:5008
+
+GET {{NatsWebSocketBridge.Gateway_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
