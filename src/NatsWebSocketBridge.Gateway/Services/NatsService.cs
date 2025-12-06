@@ -10,8 +10,10 @@ using NatsWebSocketBridge.Gateway.Configuration;
 namespace NatsWebSocketBridge.Gateway.Services;
 
 /// <summary>
-/// NATS service implementation using NATS.Net
+/// Legacy NATS service implementation using NATS.Net.
+/// This class is deprecated. Use JetStreamNatsService for new implementations.
 /// </summary>
+[Obsolete("Use JetStreamNatsService instead. This class uses core NATS pub/sub which doesn't provide delivery guarantees.")]
 public class NatsService : INatsService, IAsyncDisposable
 {
     private readonly ILogger<NatsService> _logger;

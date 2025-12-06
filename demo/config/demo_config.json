@@ -1,0 +1,96 @@
+{
+  "gateway": {
+    "url": "wss://localhost:5000/ws",
+    "insecure": true
+  },
+  "line": {
+    "id": "line1",
+    "name": "Packaging Line 1",
+    "location": "Building A, Floor 2"
+  },
+  "batch": {
+    "id": "BATCH-2024-001",
+    "product": "Aspirin 500mg",
+    "lotNumber": "LOT-A7823",
+    "targetCount": 10000
+  },
+  "devices": {
+    "temperatureSensor": {
+      "deviceId": "sensor-temp-001",
+      "token": "temp-sensor-token-001",
+      "publishInterval": 5000,
+      "subject": "factory.line1.temp",
+      "thresholds": {
+        "warning": 75.0,
+        "critical": 80.0,
+        "min": 60.0,
+        "max": 85.0
+      }
+    },
+    "conveyor": {
+      "deviceId": "actuator-conveyor-001",
+      "token": "conveyor-token-001",
+      "commandSubject": "factory.line1.conveyor.cmd",
+      "statusSubject": "factory.line1.conveyor.status",
+      "speeds": {
+        "min": 0,
+        "max": 200,
+        "default": 100
+      }
+    },
+    "visionScanner": {
+      "deviceId": "sensor-vision-001",
+      "token": "vision-token-001",
+      "scanInterval": 2000,
+      "rejectSubject": "factory.line1.quality.rejects",
+      "statsSubject": "factory.line1.quality.stats",
+      "defectTypes": [
+        "label_misalignment",
+        "missing_label",
+        "damaged_package",
+        "wrong_orientation",
+        "contamination"
+      ],
+      "defectRateNormal": 0.02,
+      "defectRateHigh": 0.15
+    },
+    "eStop": {
+      "deviceId": "sensor-estop-001",
+      "token": "estop-token-001",
+      "subject": "factory.line1.eStop",
+      "broadcastSubject": "factory.line1.emergency"
+    },
+    "productionCounter": {
+      "deviceId": "sensor-counter-001",
+      "token": "counter-token-001",
+      "subject": "factory.line1.output",
+      "countInterval": 1000
+    },
+    "orchestrator": {
+      "deviceId": "controller-orchestrator-001",
+      "token": "orchestrator-token-001",
+      "heartbeatInterval": 10000
+    },
+    "hmi": {
+      "deviceId": "hmi-panel-001",
+      "token": "hmi-token-001"
+    }
+  },
+  "alerts": {
+    "subjects": {
+      "warning": "factory.line1.alerts.warning",
+      "critical": "factory.line1.alerts.critical",
+      "emergency": "factory.line1.alerts.emergency"
+    },
+    "escalation": {
+      "warningTimeout": 60000,
+      "criticalTimeout": 30000
+    }
+  },
+  "oee": {
+    "shiftDuration": 28800,
+    "plannedDowntime": 3600,
+    "idealCycleTime": 0.5,
+    "subject": "factory.line1.oee"
+  }
+}

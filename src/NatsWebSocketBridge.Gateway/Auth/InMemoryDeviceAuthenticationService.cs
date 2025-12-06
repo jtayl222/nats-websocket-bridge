@@ -31,23 +31,57 @@ public class InMemoryDeviceAuthenticationService : IDeviceAuthenticationService
     private void RegisterDefaultDevices()
     {
         // Temperature sensors
-        RegisterDevice("sensor-temp-001", "temp-sensor-token-001", "sensor", 
-            new[] { "devices.sensor-temp-001.data", "devices.sensors.temperature" },
-            new[] { "devices.sensor-temp-001.commands", "devices.broadcast" });
-            
+        RegisterDevice("sensor-temp-001", "temp-sensor-token-001", "sensor",
+            new[] { "devices.sensor-temp-001.data", "devices.sensors.temperature", "factory.line1.>" },
+            new[] { "devices.sensor-temp-001.commands", "devices.broadcast", "factory.line1.>" });
+
         RegisterDevice("sensor-temp-002", "temp-sensor-token-002", "sensor",
             new[] { "devices.sensor-temp-002.data", "devices.sensors.temperature" },
             new[] { "devices.sensor-temp-002.commands", "devices.broadcast" });
-        
+
         // Actuators
         RegisterDevice("actuator-valve-001", "valve-token-001", "actuator",
             new[] { "devices.actuator-valve-001.status" },
             new[] { "devices.actuator-valve-001.commands", "devices.actuators.valves", "devices.broadcast" });
-        
+
         // Controllers
         RegisterDevice("controller-plc-001", "plc-token-001", "controller",
             new[] { "devices.controller-plc-001.>", "devices.sensors.>" },
             new[] { "devices.controller-plc-001.>", "devices.actuators.>", "devices.broadcast" });
+
+        // =================================================================
+        // PACKAGING LINE DEMO DEVICES
+        // =================================================================
+
+        // Conveyor Controller - actuator with bidirectional communication
+        RegisterDevice("actuator-conveyor-001", "conveyor-token-001", "actuator",
+            new[] { "factory.line1.conveyor.status", "factory.line1.status.>", "factory.line1.alerts.>" },
+            new[] { "factory.line1.conveyor.cmd", "factory.line1.emergency", "factory.line1.cmd.>" });
+
+        // Vision Scanner - quality inspection sensor
+        RegisterDevice("sensor-vision-001", "vision-token-001", "sensor",
+            new[] { "factory.line1.quality.>", "factory.line1.status.>", "factory.line1.alerts.>" },
+            new[] { "factory.line1.cmd.sensor-vision-001.>", "factory.line1.emergency", "factory.line1.conveyor.status" });
+
+        // E-Stop Button - safety device with broadcast capability
+        RegisterDevice("sensor-estop-001", "estop-token-001", "sensor",
+            new[] { "factory.line1.eStop", "factory.line1.emergency", "factory.line1.status.>", "factory.line1.alerts.>" },
+            new[] { "factory.line1.cmd.sensor-estop-001.>" });
+
+        // Production Counter - counts packages
+        RegisterDevice("sensor-counter-001", "counter-token-001", "sensor",
+            new[] { "factory.line1.output", "factory.line1.production.>", "factory.line1.batch.>", "factory.line1.status.>", "factory.line1.alerts.>" },
+            new[] { "factory.line1.cmd.sensor-counter-001.>", "factory.line1.conveyor.status", "factory.line1.quality.rejects", "factory.line1.emergency" });
+
+        // Line Orchestrator - central controller with broad permissions
+        RegisterDevice("controller-orchestrator-001", "orchestrator-token-001", "controller",
+            new[] { "factory.line1.>" },  // Can publish to anything on line1
+            new[] { "factory.line1.>" }); // Can subscribe to anything on line1
+
+        // HMI Panel - operator interface
+        RegisterDevice("hmi-panel-001", "hmi-token-001", "hmi",
+            new[] { "factory.line1.cmd.>", "factory.line1.conveyor.cmd" },  // Can send commands
+            new[] { "factory.line1.>" });  // Can see everything
     }
     
     /// <summary>

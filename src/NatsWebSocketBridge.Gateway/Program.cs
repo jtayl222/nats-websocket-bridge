@@ -10,6 +10,8 @@ builder.Services.Configure<GatewayOptions>(
     builder.Configuration.GetSection(GatewayOptions.SectionName));
 builder.Services.Configure<NatsOptions>(
     builder.Configuration.GetSection(NatsOptions.SectionName));
+builder.Services.Configure<JetStreamOptions>(
+    builder.Configuration.GetSection(JetStreamOptions.SectionName));
 
 // Add authentication and authorization services
 builder.Services.AddSingleton<IDeviceAuthenticationService, InMemoryDeviceAuthenticationService>();
@@ -17,16 +19,26 @@ builder.Services.AddSingleton<IDeviceAuthorizationService, DeviceAuthorizationSe
 
 // Add core services
 builder.Services.AddSingleton<IDeviceConnectionManager, DeviceConnectionManager>();
-builder.Services.AddSingleton<INatsService, NatsService>();
 builder.Services.AddSingleton<IMessageValidationService, MessageValidationService>();
 builder.Services.AddSingleton<IMessageThrottlingService, TokenBucketThrottlingService>();
 builder.Services.AddSingleton<IMessageBufferService, MessageBufferService>();
+
+// Add JetStream NATS service (recommended)
+builder.Services.AddSingleton<IJetStreamNatsService, JetStreamNatsService>();
+
+// Keep legacy service for backward compatibility (deprecated)
+#pragma warning disable CS0618 // Type or member is obsolete
+builder.Services.AddSingleton<INatsService, NatsService>();
+#pragma warning restore CS0618
 
 // Add WebSocket handler
 builder.Services.AddScoped<DeviceWebSocketHandler>();
 
 // Add hosted service for NATS initialization
 builder.Services.AddHostedService<NatsInitializationService>();
+
+// Add JetStream initialization service
+builder.Services.AddHostedService<JetStreamInitializationService>();
 
 // Add OpenAPI support
 builder.Services.AddEndpointsApiExplorer();
@@ -51,13 +63,14 @@ app.UseWebSockets(new WebSocketOptions
 app.UseMiddleware<WebSocketMiddleware>();
 
 // Health check endpoint
-app.MapGet("/health", (IDeviceConnectionManager connectionManager, INatsService natsService) =>
+app.MapGet("/health", (IDeviceConnectionManager connectionManager, IJetStreamNatsService jetStreamService) =>
 {
     return Results.Ok(new
     {
         status = "healthy",
         connectedDevices = connectionManager.ConnectionCount,
-        natsConnected = natsService.IsConnected
+        natsConnected = jetStreamService.IsConnected,
+        jetStreamAvailable = jetStreamService.IsJetStreamAvailable
     });
 }).WithName("HealthCheck");
 
@@ -74,5 +87,19 @@ app.MapGet("/devices", (IDeviceConnectionManager connectionManager) =>
     
     return Results.Ok(devices);
 }).WithName("GetConnectedDevices");
+
+// JetStream stream info endpoint
+app.MapGet("/jetstream/streams", async (IJetStreamNatsService jetStreamService, CancellationToken cancellationToken) =>
+{
+    var streams = await jetStreamService.GetAllStreamsAsync(cancellationToken);
+    return Results.Ok(streams);
+}).WithName("GetJetStreamStreams");
+
+// JetStream consumers endpoint
+app.MapGet("/jetstream/streams/{streamName}/consumers", async (string streamName, IJetStreamNatsService jetStreamService, CancellationToken cancellationToken) =>
+{
+    var consumers = await jetStreamService.GetAllConsumersAsync(streamName, cancellationToken);
+    return Results.Ok(consumers);
+}).WithName("GetJetStreamConsumers");
 
 app.Run();
