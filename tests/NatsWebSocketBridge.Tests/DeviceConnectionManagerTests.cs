@@ -3,20 +3,22 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using NatsWebSocketBridge.Gateway.Models;
 using NatsWebSocketBridge.Gateway.Services;
+using NUnit.Framework;
 
 namespace NatsWebSocketBridge.Tests;
 
 public class DeviceConnectionManagerTests
 {
-    private readonly DeviceConnectionManager _connectionManager;
-    
-    public DeviceConnectionManagerTests()
+    private DeviceConnectionManager _connectionManager = null!;
+
+    [SetUp]
+    public void SetUp()
     {
         var logger = Mock.Of<ILogger<DeviceConnectionManager>>();
         _connectionManager = new DeviceConnectionManager(logger);
     }
     
-    [Fact]
+    [Test]
     public void RegisterConnection_AddsDevice()
     {
         // Arrange
@@ -27,11 +29,11 @@ public class DeviceConnectionManagerTests
         _connectionManager.RegisterConnection("device-001", device, webSocket);
         
         // Assert
-        Assert.Equal(1, _connectionManager.ConnectionCount);
-        Assert.True(_connectionManager.IsConnected("device-001"));
+        Assert.That(_connectionManager.ConnectionCount, Is.EqualTo(1));
+        Assert.That(_connectionManager.IsConnected("device-001"), Is.True);
     }
     
-    [Fact]
+    [Test]
     public void RemoveConnection_RemovesDevice()
     {
         // Arrange
@@ -43,11 +45,11 @@ public class DeviceConnectionManagerTests
         _connectionManager.RemoveConnection("device-001");
         
         // Assert
-        Assert.Equal(0, _connectionManager.ConnectionCount);
-        Assert.False(_connectionManager.IsConnected("device-001"));
+        Assert.That(_connectionManager.ConnectionCount, Is.EqualTo(0));
+        Assert.That(_connectionManager.IsConnected("device-001"), Is.False);
     }
     
-    [Fact]
+    [Test]
     public void GetConnection_ReturnsWebSocket()
     {
         // Arrange
@@ -59,21 +61,21 @@ public class DeviceConnectionManagerTests
         var result = _connectionManager.GetConnection("device-001");
         
         // Assert
-        Assert.NotNull(result);
-        Assert.Same(webSocket, result);
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result , Is.SameAs(webSocket));
     }
     
-    [Fact]
+    [Test]
     public void GetConnection_UnknownDevice_ReturnsNull()
     {
         // Act
         var result = _connectionManager.GetConnection("unknown-device");
         
         // Assert
-        Assert.Null(result);
+        Assert.That(result, Is.Null);
     }
     
-    [Fact]
+    [Test]
     public void GetDeviceInfo_ReturnsDeviceInfo()
     {
         // Arrange
@@ -85,11 +87,11 @@ public class DeviceConnectionManagerTests
         var result = _connectionManager.GetDeviceInfo("device-001");
         
         // Assert
-        Assert.NotNull(result);
-        Assert.Equal("device-001", result.DeviceId);
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result.DeviceId, Is.EqualTo("device-001"));
     }
     
-    [Fact]
+    [Test]
     public void GetConnectedDevices_ReturnsAllDeviceIds()
     {
         // Arrange
@@ -101,13 +103,13 @@ public class DeviceConnectionManagerTests
         var devices = _connectionManager.GetConnectedDevices().ToList();
         
         // Assert
-        Assert.Equal(3, devices.Count);
-        Assert.Contains("device-001", devices);
-        Assert.Contains("device-002", devices);
-        Assert.Contains("device-003", devices);
+        Assert.That(devices, Does.Contain("device-001"));
+        Assert.That(devices, Does.Contain("device-002"));
+        Assert.That(devices, Does.Contain("device-003"));
+        Assert.That(devices.Count, Is.EqualTo(3));
     }
     
-    [Fact]
+    [Test]
     public void UpdateLastActivity_UpdatesTimestamp()
     {
         // Arrange
@@ -123,11 +125,11 @@ public class DeviceConnectionManagerTests
         var updatedDevice = _connectionManager.GetDeviceInfo("device-001");
         
         // Assert
-        Assert.NotNull(updatedDevice);
-        Assert.True(updatedDevice.LastActivityAt > originalTime);
+        Assert.That(updatedDevice, Is.Not.Null);
+        Assert.That(updatedDevice.LastActivityAt > originalTime, Is.True);
     }
     
-    [Fact]
+    [Test]
     public void RegisterConnection_ReplacesExistingConnection()
     {
         // Arrange
@@ -143,9 +145,9 @@ public class DeviceConnectionManagerTests
         _connectionManager.RegisterConnection("device-001", device2, webSocket2);
         
         // Assert
-        Assert.Equal(1, _connectionManager.ConnectionCount);
+        Assert.That(_connectionManager.ConnectionCount, Is.EqualTo(1));
         var info = _connectionManager.GetDeviceInfo("device-001");
-        Assert.Equal("actuator", info?.DeviceType);
+        Assert.That(info?.DeviceType, Is.EqualTo("actuator"));
     }
     
     private static DeviceInfo CreateDevice(string deviceId)

@@ -4,6 +4,7 @@ using Moq;
 using NatsWebSocketBridge.Gateway.Configuration;
 using NatsWebSocketBridge.Gateway.Models;
 using NatsWebSocketBridge.Gateway.Services;
+using NUnit.Framework;
 
 namespace NatsWebSocketBridge.Tests;
 
@@ -18,7 +19,7 @@ public class MessageValidationServiceTests
         _validationService = new MessageValidationService(logger, options);
     }
     
-    [Fact]
+    [Test]
     public void Validate_ValidPublishMessage_ReturnsSuccess()
     {
         // Arrange
@@ -33,21 +34,21 @@ public class MessageValidationServiceTests
         var result = _validationService.Validate(message);
         
         // Assert
-        Assert.True(result.IsValid);
+        Assert.That(result.IsValid, Is.True);
     }
     
-    [Fact]
+    [Test]
     public void Validate_NullMessage_ReturnsFailure()
     {
         // Act
         var result = _validationService.Validate(null!);
         
         // Assert
-        Assert.False(result.IsValid);
-        Assert.Equal("Message cannot be null", result.ErrorMessage);
+        Assert.That(result.IsValid, Is.False);
+        Assert.That(result.ErrorMessage, Is.EqualTo("Message cannot be null"));
     }
     
-    [Fact]
+    [Test]
     public void Validate_MissingSubject_ReturnsFailure()
     {
         // Arrange
@@ -62,11 +63,11 @@ public class MessageValidationServiceTests
         var result = _validationService.Validate(message);
         
         // Assert
-        Assert.False(result.IsValid);
-        Assert.Equal("Subject is required", result.ErrorMessage);
+        Assert.That(result.IsValid, Is.False);
+        Assert.That(result.ErrorMessage, Is.EqualTo("Subject is required"));
     }
     
-    [Fact]
+    [Test]
     public void Validate_PingMessage_DoesNotRequireSubject()
     {
         // Arrange
@@ -79,10 +80,10 @@ public class MessageValidationServiceTests
         var result = _validationService.Validate(message);
         
         // Assert
-        Assert.True(result.IsValid);
+        Assert.That(result.IsValid, Is.True);
     }
     
-    [Fact]
+    [Test]
     public void Validate_AuthMessage_DoesNotRequireSubject()
     {
         // Arrange
@@ -96,13 +97,12 @@ public class MessageValidationServiceTests
         var result = _validationService.Validate(message);
         
         // Assert
-        Assert.True(result.IsValid);
+        Assert.That(result.IsValid, Is.True);
     }
     
-    [Theory]
-    [InlineData(".invalid")]
-    [InlineData("invalid.")]
-    [InlineData("invalid..subject")]
+    [TestCase(".invalid")]
+    [TestCase("invalid.")]
+    [TestCase("invalid..subject")]
     public void Validate_InvalidSubjectFormat_ReturnsFailure(string subject)
     {
         // Arrange
@@ -116,15 +116,14 @@ public class MessageValidationServiceTests
         var result = _validationService.Validate(message);
         
         // Assert
-        Assert.False(result.IsValid);
-        Assert.Contains("Invalid subject format", result.ErrorMessage);
+        Assert.That(result.IsValid, Is.False);
+        Assert.That(result.ErrorMessage, Does.Contain("Invalid subject format"));
     }
     
-    [Theory]
-    [InlineData("devices.sensor-001.data")]
-    [InlineData("devices.*.data")]
-    [InlineData("devices.>")]
-    [InlineData("simple")]
+    [TestCase("devices.sensor-001.data")]
+    [TestCase("devices.*.data")]
+    [TestCase("devices.>")]
+    [TestCase("simple")]
     public void Validate_ValidSubjectFormats_ReturnsSuccess(string subject)
     {
         // Arrange
@@ -138,10 +137,10 @@ public class MessageValidationServiceTests
         var result = _validationService.Validate(message);
         
         // Assert
-        Assert.True(result.IsValid);
+        Assert.That(result.IsValid, Is.True);
     }
     
-    [Fact]
+    [Test]
     public void Validate_SubjectTooLong_ReturnsFailure()
     {
         // Arrange
@@ -155,7 +154,7 @@ public class MessageValidationServiceTests
         var result = _validationService.Validate(message);
         
         // Assert
-        Assert.False(result.IsValid);
-        Assert.Contains("maximum length", result.ErrorMessage);
+        Assert.That(result.IsValid, Is.False);
+        Assert.That(result.ErrorMessage, Does.Contain("maximum length"));
     }
 }

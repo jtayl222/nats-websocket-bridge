@@ -4,6 +4,7 @@ using Moq;
 using NatsWebSocketBridge.Gateway.Auth;
 using NatsWebSocketBridge.Gateway.Configuration;
 using NatsWebSocketBridge.Gateway.Models;
+using NUnit.Framework;
 
 namespace NatsWebSocketBridge.Tests;
 
@@ -18,7 +19,7 @@ public class DeviceAuthenticationServiceTests
         _authService = new InMemoryDeviceAuthenticationService(logger, options);
     }
     
-    [Fact]
+    [Test]
     public async Task AuthenticateAsync_WithValidCredentials_ReturnsSuccess()
     {
         // Arrange
@@ -33,14 +34,14 @@ public class DeviceAuthenticationServiceTests
         var result = await _authService.AuthenticateAsync(request);
         
         // Assert
-        Assert.True(result.Success);
-        Assert.NotNull(result.Device);
-        Assert.Equal("sensor-temp-001", result.Device.DeviceId);
-        Assert.Equal("sensor", result.Device.DeviceType);
-        Assert.True(result.Device.IsConnected);
+        Assert.That(result.Success, Is.True);
+        Assert.That(result.Device, Is.Not.Null);
+        Assert.That(result.Device.DeviceId, Is.EqualTo("sensor-temp-001"));
+        Assert.That(result.Device.DeviceType, Is.EqualTo("sensor"));
+        Assert.That(result.Device.IsConnected, Is.True);
     }
     
-    [Fact]
+    [Test]
     public async Task AuthenticateAsync_WithInvalidToken_ReturnsFailure()
     {
         // Arrange
@@ -55,12 +56,12 @@ public class DeviceAuthenticationServiceTests
         var result = await _authService.AuthenticateAsync(request);
         
         // Assert
-        Assert.False(result.Success);
-        Assert.Null(result.Device);
-        Assert.Equal("Invalid token", result.Error);
+        Assert.That(result.Success, Is.False);
+        Assert.That(result.Device, Is.Null);
+        Assert.That(result.Error, Is.EqualTo("Invalid token"));
     }
     
-    [Fact]
+    [Test]
     public async Task AuthenticateAsync_WithUnknownDevice_ReturnsFailure()
     {
         // Arrange
@@ -75,12 +76,12 @@ public class DeviceAuthenticationServiceTests
         var result = await _authService.AuthenticateAsync(request);
         
         // Assert
-        Assert.False(result.Success);
-        Assert.Null(result.Device);
-        Assert.Equal("Device not registered", result.Error);
+        Assert.That(result.Success, Is.False);
+        Assert.That(result.Device, Is.Null);
+        Assert.That(result.Error, Is.EqualTo("Device not registered"));
     }
     
-    [Fact]
+    [Test]
     public async Task AuthenticateAsync_WithEmptyDeviceId_ReturnsFailure()
     {
         // Arrange
@@ -94,31 +95,31 @@ public class DeviceAuthenticationServiceTests
         var result = await _authService.AuthenticateAsync(request);
         
         // Assert
-        Assert.False(result.Success);
-        Assert.Equal("Device ID and token are required", result.Error);
+        Assert.That(result.Success, Is.False);
+        Assert.That(result.Error, Is.EqualTo("Device ID and token are required"));
     }
     
-    [Fact]
+    [Test]
     public async Task ValidateDeviceAsync_WithKnownDevice_ReturnsTrue()
     {
         // Act
         var result = await _authService.ValidateDeviceAsync("sensor-temp-001");
         
         // Assert
-        Assert.True(result);
+        Assert.That(result, Is.True);
     }
     
-    [Fact]
+    [Test]
     public async Task ValidateDeviceAsync_WithUnknownDevice_ReturnsFalse()
     {
         // Act
         var result = await _authService.ValidateDeviceAsync("unknown-device");
         
         // Assert
-        Assert.False(result);
+        Assert.That(result, Is.False);
     }
     
-    [Fact]
+    [Test]
     public async Task AuthenticateAsync_SetsAllowedTopics()
     {
         // Arrange
@@ -132,9 +133,9 @@ public class DeviceAuthenticationServiceTests
         var result = await _authService.AuthenticateAsync(request);
         
         // Assert
-        Assert.True(result.Success);
-        Assert.NotNull(result.Device);
-        Assert.Contains("devices.sensor-temp-001.data", result.Device.AllowedPublishTopics);
-        Assert.Contains("devices.sensor-temp-001.commands", result.Device.AllowedSubscribeTopics);
+        Assert.That(result.Success, Is.True);
+        Assert.That(result.Device, Is.Not.Null);
+        Assert.That(result.Device.AllowedPublishTopics, Does.Contain("devices.sensor-temp-001.data"));
+        Assert.That(result.Device.AllowedSubscribeTopics, Does.Contain("devices.sensor-temp-001.commands"));
     }
 }

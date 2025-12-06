@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using NatsWebSocketBridge.Gateway.Configuration;
 using NatsWebSocketBridge.Gateway.Services;
+using NUnit.Framework;
 
 namespace NatsWebSocketBridge.Tests;
 
@@ -17,17 +18,17 @@ public class TokenBucketThrottlingServiceTests
         _throttlingService = new TokenBucketThrottlingService(logger, options);
     }
     
-    [Fact]
+    [Test]
     public void TryAcquire_FirstRequest_ReturnsTrue()
     {
         // Act
         var result = _throttlingService.TryAcquire("device-001");
         
         // Assert
-        Assert.True(result);
+        Assert.That(result, Is.True);
     }
     
-    [Fact]
+    [Test]
     public void TryAcquire_WithinRateLimit_ReturnsTrue()
     {
         // Arrange
@@ -36,11 +37,11 @@ public class TokenBucketThrottlingServiceTests
         // Act - acquire 5 times (rate limit)
         for (int i = 0; i < 5; i++)
         {
-            Assert.True(_throttlingService.TryAcquire(deviceId));
+            Assert.That(_throttlingService.TryAcquire(deviceId), Is.True);
         }
     }
     
-    [Fact]
+    [Test]
     public void TryAcquire_ExceedsRateLimit_ReturnsFalse()
     {
         // Arrange
@@ -56,20 +57,20 @@ public class TokenBucketThrottlingServiceTests
         var result = _throttlingService.TryAcquire(deviceId);
         
         // Assert
-        Assert.False(result);
+        Assert.That(result, Is.False);
     }
     
-    [Fact]
+    [Test]
     public void TryAcquire_EmptyDeviceId_ReturnsFalse()
     {
         // Act
         var result = _throttlingService.TryAcquire("");
         
         // Assert
-        Assert.False(result);
+        Assert.That(result, Is.False);
     }
     
-    [Fact]
+    [Test]
     public void GetCurrentCount_AfterRequests_ReturnsCorrectCount()
     {
         // Arrange
@@ -83,10 +84,10 @@ public class TokenBucketThrottlingServiceTests
         var count = _throttlingService.GetCurrentCount(deviceId);
         
         // Assert
-        Assert.Equal(3, count);
+        Assert.That(count, Is.EqualTo(3));
     }
     
-    [Fact]
+    [Test]
     public void Reset_ClearsTokensForDevice()
     {
         // Arrange
@@ -99,16 +100,16 @@ public class TokenBucketThrottlingServiceTests
         }
         
         // Verify rate limited
-        Assert.False(_throttlingService.TryAcquire(deviceId));
+        Assert.That(_throttlingService.TryAcquire(deviceId), Is.False);
         
         // Act - reset
         _throttlingService.Reset(deviceId);
         
         // Assert - should be able to acquire again
-        Assert.True(_throttlingService.TryAcquire(deviceId));
+        Assert.That(_throttlingService.TryAcquire(deviceId), Is.True);
     }
     
-    [Fact]
+    [Test]
     public void TryAcquire_DifferentDevices_IndependentLimits()
     {
         // Arrange
@@ -122,9 +123,9 @@ public class TokenBucketThrottlingServiceTests
         }
         
         // Act & Assert - device1 is rate limited
-        Assert.False(_throttlingService.TryAcquire(device1));
+        Assert.That(_throttlingService.TryAcquire(device1), Is.False);
         
         // But device2 should still have tokens
-        Assert.True(_throttlingService.TryAcquire(device2));
+        Assert.That(_throttlingService.TryAcquire(device2), Is.True);
     }
 }

@@ -4,21 +4,23 @@ using Moq;
 using NatsWebSocketBridge.Gateway.Configuration;
 using NatsWebSocketBridge.Gateway.Models;
 using NatsWebSocketBridge.Gateway.Services;
+using NUnit.Framework;
 
 namespace NatsWebSocketBridge.Tests;
 
 public class MessageBufferServiceTests
 {
-    private readonly MessageBufferService _bufferService;
-    
-    public MessageBufferServiceTests()
+    private MessageBufferService _bufferService = null!;
+
+    [SetUp]
+    public void SetUp()
     {
         var logger = Mock.Of<ILogger<MessageBufferService>>();
         var options = Options.Create(new GatewayOptions { OutgoingBufferSize = 10 });
         _bufferService = new MessageBufferService(logger, options);
     }
     
-    [Fact]
+    [Test]
     public void CreateBuffer_CreatesBufferForDevice()
     {
         // Act
@@ -26,10 +28,10 @@ public class MessageBufferServiceTests
         var reader = _bufferService.GetReader("device-001");
         
         // Assert
-        Assert.NotNull(reader);
+        Assert.That(reader, Is.Not.Null);
     }
     
-    [Fact]
+    [Test]
     public void Enqueue_WithNoBuffer_ReturnsFalse()
     {
         // Arrange
@@ -39,10 +41,10 @@ public class MessageBufferServiceTests
         var result = _bufferService.Enqueue("unknown-device", message);
         
         // Assert
-        Assert.False(result);
+        Assert.That(result, Is.False);
     }
     
-    [Fact]
+    [Test]
     public void Enqueue_WithBuffer_ReturnsTrue()
     {
         // Arrange
@@ -53,10 +55,10 @@ public class MessageBufferServiceTests
         var result = _bufferService.Enqueue("device-001", message);
         
         // Assert
-        Assert.True(result);
+        Assert.That(result, Is.True);
     }
     
-    [Fact]
+    [Test]
     public void GetQueueSize_ReturnsCorrectCount()
     {
         // Arrange
@@ -69,20 +71,20 @@ public class MessageBufferServiceTests
         var size = _bufferService.GetQueueSize("device-001");
         
         // Assert
-        Assert.Equal(3, size);
+        Assert.That(size, Is.EqualTo(3));
     }
     
-    [Fact]
+    [Test]
     public void GetQueueSize_UnknownDevice_ReturnsZero()
     {
         // Act
         var size = _bufferService.GetQueueSize("unknown-device");
         
         // Assert
-        Assert.Equal(0, size);
+        Assert.That(size, Is.EqualTo(0));
     }
     
-    [Fact]
+    [Test]
     public void RemoveBuffer_RemovesBuffer()
     {
         // Arrange
@@ -93,10 +95,10 @@ public class MessageBufferServiceTests
         var reader = _bufferService.GetReader("device-001");
         
         // Assert
-        Assert.Null(reader);
+        Assert.That(reader, Is.Null);
     }
     
-    [Fact]
+    [Test]
     public async Task Reader_ReceivesEnqueuedMessages()
     {
         // Arrange
@@ -108,13 +110,13 @@ public class MessageBufferServiceTests
         _bufferService.Enqueue("device-001", message);
         
         var reader = _bufferService.GetReader("device-001");
-        Assert.NotNull(reader);
+        Assert.That(reader, Is.Not.Null);
         
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
         var receivedMessage = await reader.ReadAsync(cts.Token);
         
         // Assert
-        Assert.Equal("test.subject", receivedMessage.Subject);
+        Assert.That(receivedMessage.Subject, Is.EqualTo("test.subject"));
     }
     
     private static GatewayMessage CreateMessage()
