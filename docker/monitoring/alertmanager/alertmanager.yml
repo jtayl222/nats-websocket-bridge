@@ -1,0 +1,101 @@
+# Alertmanager Configuration
+global:
+  # SMTP configuration for email alerts
+  # smtp_smarthost: 'smtp.example.com:587'
+  # smtp_from: 'alertmanager@example.com'
+  # smtp_auth_username: 'alertmanager'
+  # smtp_auth_password: 'password'
+
+  # Slack configuration
+  # slack_api_url: 'https://hooks.slack.com/services/xxx/yyy/zzz'
+
+  resolve_timeout: 5m
+
+# Route configuration
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'default-receiver'
+
+  routes:
+    # Critical alerts - immediate notification
+    - match:
+        severity: critical
+      receiver: 'critical-receiver'
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # Warning alerts
+    - match:
+        severity: warning
+      receiver: 'warning-receiver'
+      repeat_interval: 4h
+
+    # Info alerts - lower priority
+    - match:
+        severity: info
+      receiver: 'info-receiver'
+      repeat_interval: 12h
+
+# Receivers
+receivers:
+  - name: 'default-receiver'
+    # Webhook receiver (for development/testing)
+    webhook_configs:
+      - url: 'http://localhost:5001/alerts'
+        send_resolved: true
+
+  - name: 'critical-receiver'
+    # Uncomment and configure for production
+    # email_configs:
+    #   - to: 'ops-team@example.com'
+    #     send_resolved: true
+    # slack_configs:
+    #   - channel: '#alerts-critical'
+    #     send_resolved: true
+    #     title: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+    #     text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+    webhook_configs:
+      - url: 'http://localhost:5001/alerts/critical'
+        send_resolved: true
+
+  - name: 'warning-receiver'
+    # slack_configs:
+    #   - channel: '#alerts-warning'
+    #     send_resolved: true
+    webhook_configs:
+      - url: 'http://localhost:5001/alerts/warning'
+        send_resolved: true
+
+  - name: 'info-receiver'
+    # email_configs:
+    #   - to: 'dev-team@example.com'
+    #     send_resolved: false
+    webhook_configs:
+      - url: 'http://localhost:5001/alerts/info'
+        send_resolved: false
+
+# Inhibition rules
+inhibit_rules:
+  # If gateway is down, don't alert on other gateway issues
+  - source_match:
+      alertname: 'GatewayDown'
+    target_match:
+      service: 'gateway'
+    equal: ['service']
+
+  # If NATS is down, don't alert on gateway NATS-related issues
+  - source_match:
+      alertname: 'NATSDown'
+    target_match:
+      service: 'gateway'
+    equal: []
+
+  # Critical alerts inhibit warning alerts for the same service
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service']

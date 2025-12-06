@@ -1,0 +1,167 @@
+version: '3.8'
+
+# Historical Data Stack: TimescaleDB + MinIO + Historian Service
+# Usage: docker-compose -f docker/historian/docker-compose.yml up -d
+
+services:
+  # ============================================
+  # NATS Server with JetStream
+  # ============================================
+  nats:
+    image: nats:latest
+    container_name: nats-historian
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # Monitoring
+    command: >
+      --jetstream
+      --store_dir /data
+      --http_port 8222
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - historian-net
+
+  # ============================================
+  # TimescaleDB - Time-Series Historian
+  # ============================================
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: timescaledb-historian
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: historian
+      POSTGRES_PASSWORD: historian_secure_password
+      POSTGRES_DB: manufacturing_history
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U historian -d manufacturing_history"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - historian-net
+    command: >
+      postgres
+      -c shared_preload_libraries=timescaledb
+      -c timescaledb.telemetry_level=off
+      -c max_connections=200
+      -c shared_buffers=1GB
+      -c effective_cache_size=3GB
+      -c work_mem=64MB
+      -c maintenance_work_mem=512MB
+
+  # ============================================
+  # Historian Service - JetStream to TimescaleDB
+  # ============================================
+  historian:
+    build:
+      context: ../../src/NatsWebSocketBridge.Historian
+      dockerfile: Dockerfile
+    container_name: historian-service
+    ports:
+      - "9091:9091"   # Prometheus metrics
+    environment:
+      Historian__ConnectionString: "Host=timescaledb;Port=5432;Database=manufacturing_history;Username=historian;Password=historian_secure_password"
+      Historian__BatchSize: "100"
+      Historian__EnableAuditLogging: "true"
+      Historian__EnableIntegrityChecks: "true"
+      Nats__Url: "nats://nats:4222"
+      Nats__ClientName: "historian-service"
+      JetStream__DefaultBatchSize: "100"
+      JetStream__FetchTimeout: "5s"
+      Metrics__Port: "9091"
+    depends_on:
+      nats:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - historian-net
+
+  # ============================================
+  # MinIO - S3-Compatible Object Storage (Cold Tier)
+  # ============================================
+  minio:
+    image: minio/minio:latest
+    container_name: minio-archive
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minio_secure_password
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - historian-net
+
+  # ============================================
+  # MinIO Client - Initialize Buckets
+  # ============================================
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minioadmin minio_secure_password;
+      mc mb myminio/historical-telemetry --ignore-existing;
+      mc mb myminio/historical-events --ignore-existing;
+      mc mb myminio/historical-batches --ignore-existing;
+      mc mb myminio/historical-audit --ignore-existing;
+      mc ilm rule add myminio/historical-telemetry --expire-days 3650;
+      mc ilm rule add myminio/historical-audit --expire-days 0;
+      echo 'MinIO buckets initialized';
+      exit 0;
+      "
+    networks:
+      - historian-net
+
+  # ============================================
+  # pgAdmin - Database Management (Optional)
+  # ============================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@pharmaco.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      - timescaledb
+    networks:
+      - historian-net
+    profiles:
+      - tools
+
+volumes:
+  nats-data:
+  timescale-data:
+  minio-data:
+  pgadmin-data:
+
+networks:
+  historian-net:
+    driver: bridge

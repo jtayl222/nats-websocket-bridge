@@ -1,0 +1,140 @@
+groups:
+  - name: gateway-critical
+    rules:
+      # Gateway is down
+      - alert: GatewayDown
+        expr: up{job="gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateway is down"
+          description: "The NATS WebSocket Gateway has been unreachable for more than 1 minute."
+
+      # High error rate
+      - alert: HighErrorRate
+        expr: rate(gateway_messages_sent_total{type="error"}[5m]) > 10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate on gateway"
+          description: "Gateway is sending more than 10 error messages per second for 2 minutes."
+
+      # Mass device disconnection
+      - alert: MassDisconnection
+        expr: delta(gateway_websocket_connections_active[5m]) < -50
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Mass device disconnection detected"
+          description: "More than 50 devices disconnected in the last 5 minutes."
+
+  - name: gateway-warning
+    rules:
+      # High authentication failure rate
+      - alert: HighAuthFailures
+        expr: rate(gateway_auth_attempts_total{status="failure"}[5m]) / rate(gateway_auth_attempts_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High authentication failure rate"
+          description: "More than 10% of authentication attempts are failing."
+
+      # Rate limiting active
+      - alert: RateLimitingActive
+        expr: rate(gateway_rate_limit_rejections_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limiting is active"
+          description: "Devices are being rate limited. Consider increasing limits or investigating traffic."
+
+      # High message processing latency
+      - alert: HighProcessingLatency
+        expr: histogram_quantile(0.95, rate(gateway_message_processing_duration_seconds_bucket[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High message processing latency"
+          description: "95th percentile message processing time is above 100ms."
+
+      # Low active connections (below expected)
+      - alert: LowConnectionCount
+        expr: gateway_websocket_connections_active < 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low device connection count"
+          description: "Fewer than 10 devices are connected. Expected more devices online."
+
+  - name: nats-critical
+    rules:
+      # NATS is down
+      - alert: NATSDown
+        expr: up{job="nats"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NATS server is down"
+          description: "The NATS server has been unreachable for more than 1 minute."
+
+      # JetStream storage full
+      - alert: JetStreamStorageFull
+        expr: nats_jetstream_storage_used_bytes / nats_jetstream_storage_limit_bytes > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JetStream storage nearly full"
+          description: "JetStream storage is more than 90% full."
+
+  - name: nats-warning
+    rules:
+      # High consumer lag
+      - alert: ConsumerLag
+        expr: nats_jetstream_consumer_num_pending > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JetStream consumer has high lag"
+          description: "Consumer has more than 10,000 pending messages."
+
+      # High connection count on NATS
+      - alert: HighNATSConnections
+        expr: nats_core_connection_count > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High NATS connection count"
+          description: "NATS has more than 1000 active connections."
+
+  - name: gateway-info
+    rules:
+      # Reconnection spike
+      - alert: ReconnectionSpike
+        expr: rate(gateway_websocket_connections_total[5m]) > 50
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "High reconnection rate"
+          description: "More than 50 new connections per 5 minutes. Possible network instability."
+
+      # Authorization denials
+      - alert: AuthorizationDenials
+        expr: rate(gateway_authorization_checks_total{result="denied"}[5m]) > 1
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Authorization denials detected"
+          description: "Devices are attempting unauthorized operations."

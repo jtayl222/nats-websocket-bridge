@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -24,9 +25,10 @@ public class DeviceWebSocketHandler
     private readonly IMessageValidationService _validationService;
     private readonly IMessageThrottlingService _throttlingService;
     private readonly IMessageBufferService _bufferService;
+    private readonly IGatewayMetrics _metrics;
     private readonly GatewayOptions _options;
     private readonly JsonSerializerOptions _jsonOptions;
-    
+
     public DeviceWebSocketHandler(
         ILogger<DeviceWebSocketHandler> logger,
         IDeviceAuthenticationService authService,
@@ -36,6 +38,7 @@ public class DeviceWebSocketHandler
         IMessageValidationService validationService,
         IMessageThrottlingService throttlingService,
         IMessageBufferService bufferService,
+        IGatewayMetrics metrics,
         IOptions<GatewayOptions> options)
     {
         _logger = logger;
@@ -46,6 +49,7 @@ public class DeviceWebSocketHandler
         _validationService = validationService;
         _throttlingService = throttlingService;
         _bufferService = bufferService;
+        _metrics = metrics;
         _options = options.Value;
         _jsonOptions = new JsonSerializerOptions
         {
@@ -60,33 +64,45 @@ public class DeviceWebSocketHandler
     public async Task HandleConnectionAsync(System.Net.WebSockets.WebSocket webSocket, CancellationToken cancellationToken)
     {
         string? deviceId = null;
+        string deviceType = "unknown";
+        var connectionStartTime = Stopwatch.GetTimestamp();
         var subscriptionIds = new ConcurrentDictionary<string, string>();
-        
+        var disconnectReason = "normal";
+
+        using var activity = GatewayMetrics.ActivitySource.StartActivity("HandleDeviceConnection");
+
         try
         {
             // Wait for authentication
             var device = await AuthenticateConnectionAsync(webSocket, cancellationToken);
             if (device == null)
             {
+                disconnectReason = "auth_failed";
                 await CloseWithErrorAsync(webSocket, "Authentication failed", cancellationToken);
                 return;
             }
-            
+
             deviceId = device.DeviceId;
+            deviceType = device.DeviceType ?? "unknown";
+            activity?.SetTag("device.id", deviceId);
+            activity?.SetTag("device.type", deviceType);
+
             _connectionManager.RegisterConnection(deviceId, device, webSocket);
             _bufferService.CreateBuffer(deviceId);
-            
-            _logger.LogInformation("Device {DeviceId} connected", deviceId);
-            
+            _metrics.ConnectionOpened(deviceType);
+
+            _logger.LogInformation("Device {DeviceId} of type {DeviceType} connected",
+                deviceId, deviceType);
+
             // Start background tasks
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var sendTask = SendBufferedMessagesAsync(deviceId, webSocket, cts.Token);
             var receiveTask = ReceiveMessagesAsync(deviceId, device, webSocket, subscriptionIds, cts.Token);
-            
+
             // Wait for either task to complete (usually receive when connection closes)
             await Task.WhenAny(sendTask, receiveTask);
             cts.Cancel();
-            
+
             try
             {
                 await Task.WhenAll(sendTask, receiveTask);
@@ -98,11 +114,15 @@ public class DeviceWebSocketHandler
         }
         catch (WebSocketException ex)
         {
+            disconnectReason = "websocket_error";
             _logger.LogWarning(ex, "WebSocket error for device {DeviceId}", deviceId ?? "unknown");
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
         }
         catch (Exception ex)
         {
+            disconnectReason = "error";
             _logger.LogError(ex, "Error handling device {DeviceId}", deviceId ?? "unknown");
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
         }
         finally
         {
@@ -118,75 +138,107 @@ public class DeviceWebSocketHandler
                     _logger.LogWarning(ex, "Error unsubscribing {SubscriptionId}", subId);
                 }
             }
-            
+
             if (deviceId != null)
             {
                 _connectionManager.RemoveConnection(deviceId);
                 _bufferService.RemoveBuffer(deviceId);
                 _throttlingService.Reset(deviceId);
+
+                // Record connection metrics
+                var connectionDuration = Stopwatch.GetElapsedTime(connectionStartTime).TotalSeconds;
+                _metrics.ConnectionClosed(deviceType, disconnectReason);
+                _metrics.RecordConnectionDuration(deviceType, connectionDuration);
             }
-            
-            _logger.LogInformation("Device {DeviceId} disconnected", deviceId ?? "unknown");
+
+            _logger.LogInformation("Device {DeviceId} disconnected after {Duration:F2}s. Reason: {Reason}",
+                deviceId ?? "unknown",
+                Stopwatch.GetElapsedTime(connectionStartTime).TotalSeconds,
+                disconnectReason);
         }
     }
     
     private async Task<DeviceInfo?> AuthenticateConnectionAsync(System.Net.WebSockets.WebSocket webSocket, CancellationToken cancellationToken)
     {
+        var authStart = Stopwatch.GetTimestamp();
         using var authCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         authCts.CancelAfter(TimeSpan.FromSeconds(_options.AuthenticationTimeoutSeconds));
-        
+
         try
         {
             var buffer = new byte[4096];
             var result = await webSocket.ReceiveAsync(buffer, authCts.Token);
-            
+
             if (result.MessageType != WebSocketMessageType.Text)
             {
                 _logger.LogWarning("Expected text message for authentication");
+                _metrics.AuthAttempt("failure");
                 return null;
             }
-            
+
+            _metrics.RecordMessageSize("received", result.Count);
+
             var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
             var message = JsonSerializer.Deserialize<GatewayMessage>(json, _jsonOptions);
-            
+
             if (message?.Type != MessageType.Auth || message.Payload == null)
             {
                 _logger.LogWarning("Invalid authentication message");
+                _metrics.AuthAttempt("failure");
                 return null;
             }
-            
+
             var authRequest = JsonSerializer.Deserialize<AuthenticationRequest>(
                 message.Payload.ToString() ?? "{}", _jsonOptions);
-                
+
             if (authRequest == null)
             {
                 _logger.LogWarning("Failed to parse authentication request");
+                _metrics.AuthAttempt("failure");
                 return null;
             }
-            
+
             var authResponse = await _authService.AuthenticateAsync(authRequest, authCts.Token);
-            
+
             // Send auth response
             var responseMessage = new GatewayMessage
             {
                 Type = MessageType.Auth,
                 Payload = authResponse
             };
-            
+
             var responseJson = JsonSerializer.Serialize(responseMessage, _jsonOptions);
             var responseBytes = Encoding.UTF8.GetBytes(responseJson);
             await webSocket.SendAsync(responseBytes, WebSocketMessageType.Text, true, cancellationToken);
-            
+
+            _metrics.RecordMessageSize("sent", responseBytes.Length);
+            _metrics.RecordAuthDuration(Stopwatch.GetElapsedTime(authStart).TotalSeconds);
+
+            if (authResponse.Device != null)
+            {
+                _metrics.AuthAttempt("success");
+                _logger.LogInformation("Device {DeviceId} authenticated successfully", authRequest.DeviceId);
+            }
+            else
+            {
+                _metrics.AuthAttempt("failure");
+                _logger.LogWarning("Authentication failed for device {DeviceId}", authRequest.DeviceId);
+            }
+
             return authResponse.Device;
         }
         catch (OperationCanceledException)
         {
             _logger.LogWarning("Authentication timed out");
+            _metrics.AuthAttempt("timeout");
+            _metrics.RecordAuthDuration(Stopwatch.GetElapsedTime(authStart).TotalSeconds);
             return null;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error during authentication");
+            _metrics.AuthAttempt("error");
+            _metrics.RecordAuthDuration(Stopwatch.GetElapsedTime(authStart).TotalSeconds);
             return null;
         }
     }
@@ -199,52 +251,63 @@ public class DeviceWebSocketHandler
         CancellationToken cancellationToken)
     {
         var buffer = new byte[_options.MaxMessageSize];
-        
+
         while (webSocket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
         {
             try
             {
                 var result = await webSocket.ReceiveAsync(buffer, cancellationToken);
-                
+
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     _logger.LogInformation("Device {DeviceId} requested close", deviceId);
                     break;
                 }
-                
+
                 if (result.MessageType != WebSocketMessageType.Text)
                 {
                     continue;
                 }
-                
+
+                _metrics.RecordMessageSize("received", result.Count);
                 _connectionManager.UpdateLastActivity(deviceId);
-                
+
                 // Rate limiting
                 if (!_throttlingService.TryAcquire(deviceId))
                 {
+                    _metrics.RateLimitRejection(deviceId);
+                    _metrics.MessageSent("error", deviceId);
                     await SendErrorAsync(webSocket, "Rate limit exceeded", cancellationToken);
                     continue;
                 }
-                
+
                 var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
                 var message = JsonSerializer.Deserialize<GatewayMessage>(json, _jsonOptions);
-                
+
                 if (message == null)
                 {
+                    _metrics.MessageSent("error", deviceId);
                     await SendErrorAsync(webSocket, "Invalid message format", cancellationToken);
                     continue;
                 }
-                
+
+                _metrics.MessageReceived(message.Type.ToString().ToLowerInvariant(), deviceId);
+
                 // Validate message
                 var validationResult = _validationService.Validate(message);
                 if (!validationResult.IsValid)
                 {
+                    _metrics.MessageSent("error", deviceId);
                     await SendErrorAsync(webSocket, validationResult.ErrorMessage!, cancellationToken);
                     continue;
                 }
-                
-                // Handle message
+
+                // Handle message with timing
+                var processStart = Stopwatch.GetTimestamp();
                 await HandleMessageAsync(deviceId, device, message, subscriptionIds, cancellationToken);
+                _metrics.RecordMessageProcessingDuration(
+                    message.Type.ToString().ToLowerInvariant(),
+                    Stopwatch.GetElapsedTime(processStart).TotalSeconds);
             }
             catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
             {
@@ -296,26 +359,43 @@ public class DeviceWebSocketHandler
     private async Task HandlePublishAsync(string deviceId, DeviceInfo device, GatewayMessage message, CancellationToken cancellationToken)
     {
         // Check authorization
-        if (!_authzService.CanPublish(device, message.Subject))
+        var canPublish = _authzService.CanPublish(device, message.Subject);
+        _metrics.AuthorizationCheck("publish", canPublish);
+
+        if (!canPublish)
         {
             _logger.LogWarning("Device {DeviceId} not authorized to publish to {Subject}", deviceId, message.Subject);
             var ws = _connectionManager.GetConnection(deviceId);
             if (ws != null)
             {
+                _metrics.MessageSent("error", deviceId);
                 await SendErrorAsync(ws, $"Not authorized to publish to {message.Subject}", cancellationToken);
             }
             return;
         }
-        
+
         // Add device ID to message
         message.DeviceId = deviceId;
         message.Timestamp = DateTime.UtcNow;
-        
+
         var json = JsonSerializer.Serialize(message, _jsonOptions);
         var data = Encoding.UTF8.GetBytes(json);
-        
-        await _natsService.PublishToJetStreamAsync(message.Subject, data, cancellationToken);
-        _logger.LogDebug("Device {DeviceId} published to {Subject}", deviceId, message.Subject);
+
+        var natsStart = Stopwatch.GetTimestamp();
+        try
+        {
+            await _natsService.PublishToJetStreamAsync(message.Subject, data, cancellationToken);
+            _metrics.NatsPublish("jetstream");
+            _metrics.RecordNatsLatency("publish", Stopwatch.GetElapsedTime(natsStart).TotalSeconds);
+            _logger.LogDebug("Device {DeviceId} published to {Subject}", deviceId, message.Subject);
+        }
+        catch (Exception ex)
+        {
+            _metrics.NatsPublishError("jetstream");
+            _metrics.RecordNatsLatency("publish", Stopwatch.GetElapsedTime(natsStart).TotalSeconds);
+            _logger.LogError(ex, "Failed to publish message from {DeviceId} to {Subject}", deviceId, message.Subject);
+            throw;
+        }
     }
     
     private async Task HandleSubscribeAsync(
@@ -326,18 +406,23 @@ public class DeviceWebSocketHandler
         CancellationToken cancellationToken)
     {
         // Check authorization
-        if (!_authzService.CanSubscribe(device, message.Subject))
+        var canSubscribe = _authzService.CanSubscribe(device, message.Subject);
+        _metrics.AuthorizationCheck("subscribe", canSubscribe);
+
+        if (!canSubscribe)
         {
             _logger.LogWarning("Device {DeviceId} not authorized to subscribe to {Subject}", deviceId, message.Subject);
             var ws = _connectionManager.GetConnection(deviceId);
             if (ws != null)
             {
+                _metrics.MessageSent("error", deviceId);
                 await SendErrorAsync(ws, $"Not authorized to subscribe to {message.Subject}", cancellationToken);
             }
             return;
         }
-        
+
         // Subscribe to NATS subject
+        var natsStart = Stopwatch.GetTimestamp();
         var subscriptionId = await _natsService.SubscribeAsync(
             message.Subject,
             async (subject, data) =>
@@ -350,14 +435,18 @@ public class DeviceWebSocketHandler
                     Payload = JsonSerializer.Deserialize<object>(data, _jsonOptions),
                     Timestamp = DateTime.UtcNow
                 };
-                
+
+                _metrics.MessageSent("message", deviceId);
                 _bufferService.Enqueue(deviceId, incomingMessage);
             },
             cancellationToken);
-            
+
+        _metrics.NatsSubscribe();
+        _metrics.RecordNatsLatency("subscribe", Stopwatch.GetElapsedTime(natsStart).TotalSeconds);
+
         subscriptionIds[message.Subject] = subscriptionId;
         _logger.LogInformation("Device {DeviceId} subscribed to {Subject}", deviceId, message.Subject);
-        
+
         // Send ack
         var ackMessage = new GatewayMessage
         {
@@ -365,6 +454,7 @@ public class DeviceWebSocketHandler
             Subject = message.Subject,
             CorrelationId = message.CorrelationId
         };
+        _metrics.MessageSent("ack", deviceId);
         _bufferService.Enqueue(deviceId, ackMessage);
     }
     
@@ -387,7 +477,8 @@ public class DeviceWebSocketHandler
             Type = MessageType.Pong,
             Timestamp = DateTime.UtcNow
         };
-        
+
+        _metrics.MessageSent("pong", deviceId);
         _bufferService.Enqueue(deviceId, pongMessage);
         return Task.CompletedTask;
     }
