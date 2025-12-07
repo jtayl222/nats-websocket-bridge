@@ -66,8 +66,8 @@ NatsWebSocketBridge.Gateway/
 │   └── JetStreamOptions.cs    # Stream configuration
 ├── Services/
 │   ├── WebSocketHandler.cs    # Connection lifecycle
-│   ├── NatsService.cs         # Core NATS operations
-│   ├── JetStreamNatsService.cs # Persistent messaging
+│   ├── JetStreamNatsService.cs # JetStream messaging
+│   ├── JetStreamInitializationService.cs # Stream setup
 │   └── GatewayMetrics.cs      # Prometheus metrics
 ├── Middleware/
 │   ├── AuthenticationMiddleware.cs
@@ -106,7 +106,7 @@ Request Flow:
 public class WebSocketHandler
 {
     private readonly ConcurrentDictionary<string, WebSocket> _clients;
-    private readonly INatsService _natsService;
+    private readonly IJetStreamNatsService _jetStreamService;
     private readonly IGatewayMetrics _metrics;
 
     public async Task HandleAsync(WebSocket socket, string deviceId)
@@ -185,60 +185,74 @@ private async Task RouteMessageAsync(WebSocketMessage message, string deviceId)
 
 ---
 
-## Slide 10: NATS Service Layer
+## Slide 10: JetStream Service Layer
 
 ### Interface Design
 
 ```csharp
-public interface INatsService
+public interface IJetStreamNatsService : IAsyncDisposable
 {
-    Task ConnectAsync(CancellationToken ct = default);
-    Task<bool> PublishAsync(string subject, byte[] data,
-                            IReadOnlyDictionary<string, string>? headers = null);
-    Task<byte[]?> RequestAsync(string subject, byte[] data,
-                               TimeSpan timeout);
-    IAsyncEnumerable<NatsMessage> SubscribeAsync(string subject,
-                                                  CancellationToken ct);
-    Task DisconnectAsync();
+    bool IsConnected { get; }
+    bool IsJetStreamAvailable { get; }
+    
+    Task InitializeAsync(CancellationToken ct = default);
+    Task<JetStreamPublishResult> PublishAsync(string subject, byte[] data,
+        Dictionary<string, string>? headers = null,
+        string? messageId = null,
+        CancellationToken ct = default);
+    Task<JetStreamSubscription> SubscribeDeviceAsync(string deviceId,
+        string subject, Func<JetStreamMessage, Task> handler,
+        ReplayOptions? replayOptions = null,
+        CancellationToken ct = default);
+    Task UnsubscribeAsync(string subscriptionId, bool deleteConsumer = false,
+        CancellationToken ct = default);
+    Task AckMessageAsync(JetStreamMessage message, CancellationToken ct = default);
 }
 ```
 
-**Why an interface?**
-- Testability (mock in unit tests)
-- Flexibility (swap implementations)
-- Separation of concerns
+**Why JetStream?**
+- Guaranteed delivery with acknowledgements
+- Message replay for reconnecting devices
+- Durable consumers for reliable subscriptions
 
 ---
 
-## Slide 11: NATS Service Implementation
+## Slide 11: JetStream Service Implementation
 
 ```csharp
-public class NatsService : INatsService, IAsyncDisposable
+public class JetStreamNatsService : IJetStreamNatsService
 {
     private readonly NatsConnection _connection;
-    private readonly ILogger<NatsService> _logger;
+    private readonly NatsJSContext _jetStream;
+    private readonly ILogger<JetStreamNatsService> _logger;
     private readonly IGatewayMetrics _metrics;
 
-    public async Task<bool> PublishAsync(string subject, byte[] data,
-        IReadOnlyDictionary<string, string>? headers = null)
+    public async Task<JetStreamPublishResult> PublishAsync(
+        string subject, byte[] data,
+        Dictionary<string, string>? headers = null,
+        string? messageId = null,
+        CancellationToken ct = default)
     {
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            var natsHeaders = headers != null
-                ? new NatsHeaders(headers)
-                : null;
-
-            await _connection.PublishAsync(subject, data, natsHeaders);
+            var ack = await _jetStream.PublishAsync(subject, data,
+                opts: new NatsJSPubOpts { MsgId = messageId }, ct);
 
             _metrics.RecordPublish(subject, stopwatch.ElapsedMilliseconds);
-            return true;
+            return new JetStreamPublishResult
+            {
+                Success = true,
+                Stream = ack.Stream,
+                Sequence = ack.Seq,
+                Duplicate = ack.Duplicate
+            };
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Publish failed: {Subject}", subject);
             _metrics.IncrementPublishErrors();
-            return false;
+            return new JetStreamPublishResult { Success = false, Error = ex.Message };
         }
     }
 }
@@ -246,25 +260,29 @@ public class NatsService : INatsService, IAsyncDisposable
 
 ---
 
-## Slide 12: JetStream Integration
+## Slide 12: JetStream Features
 
 ### Why JetStream?
 
 | Feature | Core NATS | JetStream |
-|---------|-----------|-----------|
+|---------|-----------|----------|
 | Delivery | At-most-once | At-least-once |
 | Persistence | None | Disk/Memory |
 | Replay | No | Yes |
 | Consumer Tracking | No | Yes |
 
 ```csharp
-public interface IJetStreamNatsService : INatsService
-{
-    Task<bool> PublishToStreamAsync(string stream, string subject,
-                                    byte[] data);
-    Task<INatsJSConsumer> CreateConsumerAsync(string stream,
-                                               string consumerName);
-}
+// Subscribe with replay for reconnecting devices
+var subscription = await _jetStreamService.SubscribeDeviceAsync(
+    deviceId,
+    "telemetry.>",
+    async (msg) =>
+    {
+        await ProcessMessageAsync(msg);
+        await _jetStreamService.AckMessageAsync(msg);
+    },
+    new ReplayOptions { FromSequence = lastSeenSequence }
+);
 ```
 
 ---
@@ -315,9 +333,10 @@ builder.Services.Configure<GatewayOptions>(
     builder.Configuration.GetSection("Gateway"));
 builder.Services.Configure<NatsOptions>(
     builder.Configuration.GetSection("Nats"));
+builder.Services.Configure<JetStreamOptions>(
+    builder.Configuration.GetSection("JetStream"));
 
-// Services
-builder.Services.AddSingleton<INatsService, NatsService>();
+// Services - JetStream for all NATS operations
 builder.Services.AddSingleton<IJetStreamNatsService, JetStreamNatsService>();
 builder.Services.AddSingleton<IGatewayMetrics, GatewayMetrics>();
 builder.Services.AddSingleton<WebSocketHandler>();

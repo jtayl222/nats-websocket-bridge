@@ -113,49 +113,79 @@ classDiagram
 
 ```mermaid
 classDiagram
-    class INatsService {
-        <<interface>>
-        +PublishAsync(subject, data)
-        +SubscribeAsync(subject, handler) ISubscription
-        +RequestAsync(subject, data, timeout) NatsMsg
-    }
-
-    class NatsService {
-        -_connection: IConnection
-        -_options: NatsOptions
-        +ConnectAsync()
-        +PublishAsync(subject, data)
-        +SubscribeAsync(subject, handler) ISubscription
-    }
-
     class IJetStreamNatsService {
         <<interface>>
-        +PublishToJetStreamAsync(subject, data) PubAck
-        +CreateDurableConsumerAsync(stream, consumer, config)
-        +SubscribeWithConsumerAsync(stream, consumer, handler)
+        +IsConnected: bool
+        +IsJetStreamAvailable: bool
+        +InitializeAsync(token)
+        +PublishAsync(subject, data, headers, messageId) JetStreamPublishResult
+        +SubscribeAsync(stream, consumer, handler) JetStreamSubscription
+        +SubscribeDeviceAsync(deviceId, subject, handler, replayOptions) JetStreamSubscription
+        +UnsubscribeAsync(subscriptionId, deleteConsumer)
+        +AckMessageAsync(message)
+        +NakMessageAsync(message, delay)
+        +EnsureStreamExistsAsync(config) StreamInfo
+        +CreateConsumerAsync(config) ConsumerInfo
+        +GetOrCreateConsumerAsync(config) ConsumerInfo
+        +FetchMessagesAsync(stream, consumer, batchSize, timeout) List~JetStreamMessage~
     }
 
     class JetStreamNatsService {
-        -_jetStream: IJetStream
-        -_context: IJetStreamContext
+        -_connection: NatsConnection
+        -_jetStream: NatsJSContext
         -_options: JetStreamOptions
-        +PublishToJetStreamAsync(subject, data) PubAck
-        +CreateStreamAsync(config)
-        +CreateDurableConsumerAsync(stream, consumer, config)
+        -_subscriptions: ConcurrentDictionary
+        +InitializeAsync(token)
+        +PublishAsync(subject, data, headers, messageId) JetStreamPublishResult
+        +SubscribeDeviceAsync(deviceId, subject, handler, replayOptions) JetStreamSubscription
+        +EnsureStreamExistsAsync(config) StreamInfo
+        +CreateConsumerAsync(config) ConsumerInfo
     }
 
     class JetStreamInitializationService {
         <<IHostedService>>
-        -_natsService: IJetStreamNatsService
+        -_jetStreamService: IJetStreamNatsService
         -_options: JetStreamOptions
         +StartAsync(token)
-        -InitializeStreamsAsync()
+        +StopAsync(token)
     }
 
-    INatsService <|.. NatsService
+    class JetStreamPublishResult {
+        +Success: bool
+        +Stream: string
+        +Sequence: ulong
+        +Duplicate: bool
+        +Error: string
+        +RetryCount: int
+    }
+
+    class JetStreamMessage {
+        +Subject: string
+        +Data: byte[]
+        +Headers: Dictionary
+        +Sequence: ulong
+        +ConsumerSequence: ulong
+        +Timestamp: DateTime
+        +DeliveryCount: int
+        +IsRedelivered: bool
+        +Stream: string
+        +Consumer: string
+    }
+
+    class JetStreamSubscription {
+        +SubscriptionId: string
+        +ConsumerName: string
+        +StreamName: string
+        +Subject: string
+        +IsActive: bool
+        +DeviceId: string
+    }
+
     IJetStreamNatsService <|.. JetStreamNatsService
-    JetStreamNatsService --> NatsService
     JetStreamInitializationService --> IJetStreamNatsService
+    JetStreamNatsService ..> JetStreamPublishResult
+    JetStreamNatsService ..> JetStreamMessage
+    JetStreamNatsService ..> JetStreamSubscription
 ```
 
 ## 4. Message Models

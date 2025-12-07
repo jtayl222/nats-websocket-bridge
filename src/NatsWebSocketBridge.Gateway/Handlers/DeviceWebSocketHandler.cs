@@ -21,7 +21,7 @@ public class DeviceWebSocketHandler
     private readonly IDeviceAuthenticationService _authService;
     private readonly IDeviceAuthorizationService _authzService;
     private readonly IDeviceConnectionManager _connectionManager;
-    private readonly INatsService _natsService;
+    private readonly IJetStreamNatsService _jetStreamService;
     private readonly IMessageValidationService _validationService;
     private readonly IMessageThrottlingService _throttlingService;
     private readonly IMessageBufferService _bufferService;
@@ -34,7 +34,7 @@ public class DeviceWebSocketHandler
         IDeviceAuthenticationService authService,
         IDeviceAuthorizationService authzService,
         IDeviceConnectionManager connectionManager,
-        INatsService natsService,
+        IJetStreamNatsService jetStreamService,
         IMessageValidationService validationService,
         IMessageThrottlingService throttlingService,
         IMessageBufferService bufferService,
@@ -45,7 +45,7 @@ public class DeviceWebSocketHandler
         _authService = authService;
         _authzService = authzService;
         _connectionManager = connectionManager;
-        _natsService = natsService;
+        _jetStreamService = jetStreamService;
         _validationService = validationService;
         _throttlingService = throttlingService;
         _bufferService = bufferService;
@@ -131,7 +131,7 @@ public class DeviceWebSocketHandler
             {
                 try
                 {
-                    await _natsService.UnsubscribeAsync(subId);
+                    await _jetStreamService.UnsubscribeAsync(subId);
                 }
                 catch (Exception ex)
                 {
@@ -384,10 +384,14 @@ public class DeviceWebSocketHandler
         var natsStart = Stopwatch.GetTimestamp();
         try
         {
-            await _natsService.PublishToJetStreamAsync(message.Subject, data, cancellationToken);
+            var result = await _jetStreamService.PublishAsync(message.Subject, data, cancellationToken: cancellationToken);
+            if (!result.Success)
+            {
+                throw new InvalidOperationException(result.Error ?? "Publish failed");
+            }
             _metrics.NatsPublish("jetstream");
             _metrics.RecordNatsLatency("publish", Stopwatch.GetElapsedTime(natsStart).TotalSeconds);
-            _logger.LogDebug("Device {DeviceId} published to {Subject}", deviceId, message.Subject);
+            _logger.LogDebug("Device {DeviceId} published to {Subject} (seq: {Sequence})", deviceId, message.Subject, result.Sequence);
         }
         catch (Exception ex)
         {
@@ -421,31 +425,35 @@ public class DeviceWebSocketHandler
             return;
         }
 
-        // Subscribe to NATS subject
+        // Subscribe to NATS subject using JetStream
         var natsStart = Stopwatch.GetTimestamp();
-        var subscriptionId = await _natsService.SubscribeAsync(
+        var subscription = await _jetStreamService.SubscribeDeviceAsync(
+            deviceId,
             message.Subject,
-            async (subject, data) =>
+            async (msg) =>
             {
                 // Forward message to device
                 var incomingMessage = new GatewayMessage
                 {
                     Type = MessageType.Message,
-                    Subject = subject,
-                    Payload = JsonSerializer.Deserialize<object>(data, _jsonOptions),
-                    Timestamp = DateTime.UtcNow
+                    Subject = msg.Subject,
+                    Payload = JsonSerializer.Deserialize<object>(msg.Data, _jsonOptions),
+                    Timestamp = msg.Timestamp
                 };
 
                 _metrics.MessageSent("message", deviceId);
                 _bufferService.Enqueue(deviceId, incomingMessage);
+                
+                // Acknowledge the message
+                await _jetStreamService.AckMessageAsync(msg);
             },
-            cancellationToken);
+            cancellationToken: cancellationToken);
 
         _metrics.NatsSubscribe();
         _metrics.RecordNatsLatency("subscribe", Stopwatch.GetElapsedTime(natsStart).TotalSeconds);
 
-        subscriptionIds[message.Subject] = subscriptionId;
-        _logger.LogInformation("Device {DeviceId} subscribed to {Subject}", deviceId, message.Subject);
+        subscriptionIds[message.Subject] = subscription.SubscriptionId;
+        _logger.LogInformation("Device {DeviceId} subscribed to {Subject} (consumer: {Consumer})", deviceId, message.Subject, subscription.ConsumerName);
 
         // Send ack
         var ackMessage = new GatewayMessage
@@ -465,7 +473,7 @@ public class DeviceWebSocketHandler
     {
         if (subscriptionIds.TryRemove(message.Subject, out var subscriptionId))
         {
-            await _natsService.UnsubscribeAsync(subscriptionId, cancellationToken);
+            await _jetStreamService.UnsubscribeAsync(subscriptionId, cancellationToken: cancellationToken);
             _logger.LogDebug("Unsubscribed from {Subject}", message.Subject);
         }
     }

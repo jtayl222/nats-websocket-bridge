@@ -134,19 +134,11 @@ try
     builder.Services.AddSingleton<IMessageThrottlingService, TokenBucketThrottlingService>();
     builder.Services.AddSingleton<IMessageBufferService, MessageBufferService>();
 
-    // Add JetStream NATS service (recommended)
+    // Add JetStream NATS service
     builder.Services.AddSingleton<IJetStreamNatsService, JetStreamNatsService>();
-
-    // Keep legacy service for backward compatibility (deprecated)
-    #pragma warning disable CS0618 // Type or member is obsolete
-    builder.Services.AddSingleton<INatsService, NatsService>();
-    #pragma warning restore CS0618
 
     // Add WebSocket handler
     builder.Services.AddScoped<DeviceWebSocketHandler>();
-
-    // Add hosted service for NATS initialization
-    builder.Services.AddHostedService<NatsInitializationService>();
 
     // Add JetStream initialization service
     builder.Services.AddHostedService<JetStreamInitializationService>();

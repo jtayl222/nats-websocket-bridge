@@ -96,7 +96,6 @@ graph TB
     end
 
     subgraph "NATS Layer"
-        NATS[INatsService]
         JSVC[IJetStreamNatsService]
     end
 
@@ -115,8 +114,7 @@ graph TB
     WSH --> CONN
     WSH --> JSVC
 
-    JSVC --> NATS
-    NATS --> NOPTS
+    JSVC --> NOPTS
     JSVC --> JSOPTS
     WSH --> OPTS
 
