@@ -1,15 +1,18 @@
 # Episode 07: Historical Data Retention
 
 **Duration:** 15-18 minutes
-**Prerequisites:** Episodes 01-03
+**Prerequisites:** [Episode 01](../01-intro/README.md) through [Episode 03](../03-gateway-architecture/README.md)
+**Series:** [NATS WebSocket Bridge Video Series](../../SERIES_OVERVIEW.md) (7 of 7)
+
+> **Technical Reference:** For complete schema definitions, SQL examples, and implementation checklist, see [Historical Data Retention Architecture](../../../compliance/HISTORICAL_DATA_RETENTION.md).
 
 ## Learning Objectives
 
 By the end of this episode, viewers will understand:
-- FDA 21 CFR Part 11 compliance requirements
-- Three-tier retention architecture
-- TimescaleDB hypertables and continuous aggregates
-- Audit trail implementation
+- FDA 21 CFR Part 11 compliance requirements for electronic records
+- Three-tier retention architecture (Hot/Warm/Cold)
+- TimescaleDB hypertables and continuous aggregates for pharmaceutical data
+- Audit trail implementation with tamper-detection hash chains
 
 ## Outline
 
@@ -127,3 +130,55 @@ SELECT * FROM verify_audit_integrity();
 - [ ] Audit trail immutable
 - [ ] Retention policies documented
 - [ ] Integrity verification available
+
+## ALCOA+ Principles in Practice
+
+This architecture implements all ALCOA+ data integrity principles:
+
+| Principle | Implementation | Component |
+|-----------|----------------|-----------|
+| **Attributable** | `device_id`, `user_id` on every record | Historian Service |
+| **Legible** | Structured JSON, SQL-queryable | TimescaleDB |
+| **Contemporaneous** | Device-side timestamps, real-time ingestion | Device SDK, JetStream |
+| **Original** | Immutable audit log, checksums | Audit Log Service |
+| **Accurate** | Validation on ingestion, integrity checks | Gateway, Historian |
+| **Complete** | Full batch records, no gaps | Batch Context Service |
+| **Consistent** | Cross-system correlation IDs | All components |
+| **Enduring** | 10+ year retention, Parquet archives | S3/MinIO Cold Storage |
+| **Available** | SQL queries, Grafana dashboards | TimescaleDB, Grafana |
+
+## Batch Investigation Workflow
+
+When Quality Assurance identifies a potential issue with batch B2024-001:
+
+```sql
+-- 1. Get batch context
+SELECT * FROM batches WHERE batch_id = 'B2024-001';
+
+-- 2. Find all temperature readings during production
+SELECT time, device_id, value, quality
+FROM telemetry
+WHERE batch_id = 'B2024-001'
+  AND metric_name = 'temperature'
+ORDER BY time;
+
+-- 3. Identify any out-of-spec events
+SELECT * FROM events
+WHERE batch_id = 'B2024-001'
+  AND event_type IN ('temperature_excursion', 'specification_deviation')
+ORDER BY time;
+
+-- 4. Verify data integrity
+SELECT * FROM verify_audit_integrity()
+WHERE batch_id = 'B2024-001';
+```
+
+## Related Documentation
+
+- [Historical Data Retention Architecture](../../../compliance/HISTORICAL_DATA_RETENTION.md) - Complete technical reference
+- [Episode 02: NATS Fundamentals](../02-nats-fundamentals/README.md) - JetStream as hot tier
+- [Episode 06: Monitoring](../06-monitoring-observability/README.md) - Real-time visibility into data flow
+
+## Series Complete
+
+This concludes the 7-episode NATS WebSocket Bridge series. For the complete learning path and additional resources, see the [Series Overview](../../SERIES_OVERVIEW.md).

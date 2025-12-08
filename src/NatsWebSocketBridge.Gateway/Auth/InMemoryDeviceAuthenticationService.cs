@@ -82,6 +82,29 @@ public class InMemoryDeviceAuthenticationService : IDeviceAuthenticationService
         RegisterDevice("hmi-panel-001", "hmi-token-001", "hmi",
             new[] { "factory.line1.cmd.>", "factory.line1.conveyor.cmd" },  // Can send commands
             new[] { "factory.line1.>" });  // Can see everything
+
+        // =================================================================
+        // SIMPLE DEMO DEVICES (for video tutorials and testing)
+        // =================================================================
+
+        // Generic demo device with broad permissions
+        RegisterDevice("demo-device", "demo-token", "demo",
+            new[] { "telemetry.>", "factory.>", "test.>", "demo.>" },
+            new[] { "commands.>", "factory.>", "test.>", "demo.>" });
+
+        // Simple test device
+        RegisterDevice("test-device", "test-token", "test",
+            new[] { "telemetry.>", "test.>", "factory.>" },
+            new[] { "commands.>", "test.>", "factory.>" });
+
+        // Sensor demo devices
+        RegisterDevice("SENSOR-001", "sensor-token", "sensor",
+            new[] { "telemetry.SENSOR-001.>", "telemetry.sensor.>", "factory.line1.>" },
+            new[] { "commands.SENSOR-001.>", "commands.sensor.>", "factory.line1.>" });
+
+        RegisterDevice("SENSOR-002", "sensor-token", "sensor",
+            new[] { "telemetry.SENSOR-002.>", "telemetry.sensor.>", "factory.line2.>" },
+            new[] { "commands.SENSOR-002.>", "commands.sensor.>", "factory.line2.>" });
     }
     
     /// <summary>

@@ -1,15 +1,16 @@
 # Episode 05: Device SDK (C++)
 
 **Duration:** 12-15 minutes
-**Prerequisites:** Episodes 01-04
+**Prerequisites:** [Episode 01](../01-intro/README.md) through [Episode 04](../04-websocket-protocol/README.md)
+**Series:** [NATS WebSocket Bridge Video Series](../../SERIES_OVERVIEW.md) (5 of 7)
 
 ## Learning Objectives
 
 By the end of this episode, viewers will understand:
-- C++ SDK architecture for embedded systems
-- Async connection management
-- Message buffering for offline operation
-- Metrics callback integration
+- C++ SDK architecture for embedded packaging line controllers
+- Async connection management with automatic reconnection
+- Message buffering for offline operation (critical for factory floor reliability)
+- Metrics callback integration for Prometheus observability
 
 ## Outline
 
@@ -111,3 +112,41 @@ int main() {
 - Connection state machine
 - Buffer behavior during disconnect
 - Metrics flow diagram
+
+## Pharmaceutical Packaging Line Integration
+
+The C++ SDK is designed for integration with packaging line equipment controllers:
+
+| Equipment Type | Typical Controller | Integration Pattern |
+|---------------|-------------------|---------------------|
+| Blister Sealers | Beckhoff TwinCAT, Siemens S7 | PLC companion application |
+| Cartoners | Rockwell CompactLogix | OPC UA to SDK bridge |
+| Case Packers | FANUC controllers | Direct SDK integration |
+| Vision Systems | Cognex, Keyence | Inspection result publisher |
+| Serialization | Antares, TraceLink | Aggregation event publisher |
+
+### Offline Buffering for ALCOA+ Compliance
+
+The SDK's offline buffer ensures **contemporaneous** data capture even during network outages:
+
+```cpp
+// Configure buffer for 24-hour retention at 1 msg/sec = 86,400 messages
+gateway::ConnectionOptions opts;
+opts.bufferSize = 100000;  // Messages retained during disconnect
+opts.bufferStrategy = BufferStrategy::FIFO;  // Oldest messages dropped if full
+
+// All buffered messages include original capture timestamp
+// Supports ALCOA+ "Contemporaneous" requirement
+```
+
+**Data Integrity:** Each message is timestamped at capture time (not send time), ensuring accurate batch records even after network recovery.
+
+## Related Documentation
+
+- [Episode 04: WebSocket Protocol](../04-websocket-protocol/README.md) - Protocol the SDK implements
+- [Episode 06: Monitoring](../06-monitoring-observability/README.md) - SDK metrics integration
+- [Historical Data Retention](../../../compliance/HISTORICAL_DATA_RETENTION.md) - How device data feeds the historian
+
+## Next Episode
+
+→ [Episode 06: Monitoring & Observability](../06-monitoring-observability/README.md) - Instrumenting the entire stack

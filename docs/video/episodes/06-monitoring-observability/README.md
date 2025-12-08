@@ -1,15 +1,18 @@
 # Episode 06: Monitoring & Observability
 
 **Duration:** 12-15 minutes
-**Prerequisites:** Episodes 01-03
+**Prerequisites:** [Episode 01](../01-intro/README.md) through [Episode 03](../03-gateway-architecture/README.md)
+**Series:** [NATS WebSocket Bridge Video Series](../../SERIES_OVERVIEW.md) (6 of 7)
+
+> **Technical Reference:** For detailed architecture, metrics definitions, and alerting rules, see [Monitoring Architecture](../../../monitoring/MONITORING_ARCHITECTURE.md).
 
 ## Learning Objectives
 
 By the end of this episode, viewers will understand:
-- PLG stack: Prometheus, Loki, Grafana
-- Gateway metrics instrumentation
-- Structured logging for Loki
-- Building dashboards and alerts
+- PLG stack: Prometheus, Loki, Grafana (and why not ELK)
+- Gateway metrics instrumentation for production visibility
+- Structured logging for Loki with pharmaceutical audit context
+- Building dashboards and alerts for packaging line operations
 
 ## Outline
 
@@ -104,3 +107,57 @@ open http://localhost:3000  # admin/admin
 - Dashboard screenshot walkthrough
 - Alert flow diagram
 - Log query examples
+
+## Pharmaceutical Operations Dashboards
+
+Beyond system health, monitoring enables real-time manufacturing visibility:
+
+### Factory Operations Dashboard
+| Panel | Metric Source | Business Value |
+|-------|---------------|----------------|
+| Line Status | `factory_line_state` | Real-time production status |
+| OEE Gauges | `factory_oee_*` | Availability, Performance, Quality |
+| Reject Rate | `factory_defect_count_total` | Quality trend monitoring |
+| E-Stop Events | `factory_emergency_stop_total` | Safety incident tracking |
+
+### Compliance-Relevant Alerts
+```yaml
+# Alert on potential data integrity issues
+- alert: DeviceClockDrift
+  expr: abs(device_timestamp - server_timestamp) > 60
+  labels:
+    severity: warning
+    compliance: ALCOA
+
+# Alert on batch record gaps
+- alert: TelemetryGap
+  expr: time() - device_last_message_timestamp > 300
+  labels:
+    severity: critical
+    compliance: "21_CFR_Part_11"
+```
+
+### Log Queries for Batch Investigation
+
+When investigating a manufacturing deviation, Loki enables rapid log correlation:
+
+```logql
+# All events for a specific batch
+{service="gateway"} | json | batch_id="B2024-001"
+
+# Temperature excursions during production
+{service="gateway"} | json | event_type="temperature_excursion" | batch_id="B2024-001"
+
+# Device reconnections (potential data gaps)
+{service="gateway"} |= "reconnected" | json | line_id="line1"
+```
+
+## Related Documentation
+
+- [Monitoring Architecture](../../../monitoring/MONITORING_ARCHITECTURE.md) - Complete metrics and alerting reference
+- [Episode 03: Gateway Architecture](../03-gateway-architecture/README.md) - Metrics instrumentation source
+- [Episode 07: Historical Retention](../07-historical-retention/README.md) - Long-term data for compliance
+
+## Next Episode
+
+→ [Episode 07: Historical Data Retention](../07-historical-retention/README.md) - FDA compliance and long-term archival

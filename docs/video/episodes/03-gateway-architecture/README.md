@@ -1,15 +1,16 @@
 # Episode 03: Gateway Architecture
 
 **Duration:** 15-18 minutes
-**Prerequisites:** Episodes 01-02
+**Prerequisites:** [Episode 01](../01-intro/README.md), [Episode 02](../02-nats-fundamentals/README.md)
+**Series:** [NATS WebSocket Bridge Video Series](../../SERIES_OVERVIEW.md) (3 of 7)
 
 ## Learning Objectives
 
 By the end of this episode, viewers will understand:
-- Why a gateway sits between devices and NATS
-- C# WebSocket handling with ASP.NET Core
-- Connection management for thousands of clients
-- Message routing and validation patterns
+- Why a gateway sits between devices and NATS (protocol translation, security boundary)
+- C# WebSocket handling with ASP.NET Core for production environments
+- Connection management for thousands of concurrent packaging line devices
+- Message routing and validation patterns for pharmaceutical telemetry
 
 ## Outline
 
@@ -91,3 +92,52 @@ wscat -c ws://localhost:5000/ws
 - Request flow through middleware
 - Connection state machine
 - Configuration structure
+
+## Gateway Role in Pharmaceutical Context
+
+The gateway serves as the critical boundary between factory floor devices and enterprise systems:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    FACTORY FLOOR (OT Network)                    │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐            │
+│  │ Blister │  │Cartoner │  │  Case   │  │ Serial- │            │
+│  │ Sealer  │  │         │  │ Packer  │  │ ization │            │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘            │
+│       │            │            │            │                   │
+│       └────────────┴────────────┴────────────┘                   │
+│                           │                                      │
+│                    WebSocket (WSS)                               │
+└───────────────────────────┼──────────────────────────────────────┘
+                            │
+┌───────────────────────────┼──────────────────────────────────────┐
+│                    ┌──────▼──────┐                               │
+│                    │   GATEWAY   │  ← Episode 03 focus           │
+│                    │             │                               │
+│                    │ • Auth      │                               │
+│                    │ • Validate  │                               │
+│                    │ • Route     │                               │
+│                    │ • Metrics   │                               │
+│                    └──────┬──────┘                               │
+│                           │                                      │
+│                    ENTERPRISE (IT Network)                       │
+└───────────────────────────┼──────────────────────────────────────┘
+                            │
+                      NATS + JetStream
+```
+
+**Key Responsibilities:**
+- **Authentication**: Validates device credentials before allowing message flow
+- **Authorization**: Enforces topic-level permissions per device type
+- **Rate Limiting**: Prevents runaway devices from overwhelming the system
+- **Audit Logging**: Records all authentication events for FDA compliance
+
+## Related Documentation
+
+- [Monitoring Architecture](../../../monitoring/MONITORING_ARCHITECTURE.md) - Gateway metrics and observability
+- [Episode 04: WebSocket Protocol](../04-websocket-protocol/README.md) - Message format details
+- [Episode 06: Monitoring](../06-monitoring-observability/README.md) - Instrumenting the gateway
+
+## Next Episode
+
+→ [Episode 04: WebSocket Protocol](../04-websocket-protocol/README.md) - Authentication flow and message formats

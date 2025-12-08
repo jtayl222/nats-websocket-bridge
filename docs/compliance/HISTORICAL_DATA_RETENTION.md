@@ -1,5 +1,7 @@
 # Historical Data Retention Architecture
 
+> **Video Series:** This document is the technical reference for [Episode 07: Historical Data Retention](../video/episodes/07-historical-retention/README.md). For an introduction to the complete system, start with [Episode 01: Introduction](../video/episodes/01-intro/README.md).
+
 ## Executive Summary
 
 This document describes the data retention architecture for PharmaCo's manufacturing environment, designed to meet FDA 21 CFR Part 11 requirements and enable historical troubleshooting of manufacturing issues.
@@ -548,3 +550,17 @@ AND expected_previous IS NOT NULL;
 - [ ] Validation test scripts
 - [ ] Disaster recovery testing
 - [ ] Compliance audit readiness
+
+## Related Video Episodes
+
+| Episode | Relevance |
+|---------|-----------|
+| [01: Introduction](../video/episodes/01-intro/README.md) | Business context, compliance challenges |
+| [02: NATS Fundamentals](../video/episodes/02-nats-fundamentals/README.md) | JetStream as hot tier storage |
+| [06: Monitoring](../video/episodes/06-monitoring-observability/README.md) | Real-time data flow visibility |
+| [07: Historical Retention](../video/episodes/07-historical-retention/README.md) | **Primary episode** - Full walkthrough |
+
+## Additional Resources
+
+- [Monitoring Architecture](../monitoring/MONITORING_ARCHITECTURE.md) - PLG stack integration
+- [Video Series Overview](../video/SERIES_OVERVIEW.md) - Complete learning path

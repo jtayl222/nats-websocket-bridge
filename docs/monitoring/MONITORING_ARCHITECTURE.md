@@ -1,5 +1,7 @@
 # Monitoring Architecture
 
+> **Video Series:** This document is the technical reference for [Episode 06: Monitoring & Observability](../video/episodes/06-monitoring-observability/README.md). For an introduction to the complete system, start with [Episode 01: Introduction](../video/episodes/01-intro/README.md).
+
 ## Overview
 
 This document describes the monitoring stack for the NATS WebSocket Bridge system, following industry best practices for industrial IoT and factory environments.
@@ -414,3 +416,45 @@ level: debug | info | warn | error | fatal
 3. **Authorization**: Role-based dashboard access
 4. **Encryption**: TLS for all monitoring endpoints
 5. **Data Sensitivity**: Scrub PII from logs before ingestion
+
+## Pharmaceutical Manufacturing Considerations
+
+### Compliance-Relevant Monitoring
+
+For FDA 21 CFR Part 11 environments, monitoring supports:
+
+| Requirement | Monitoring Solution |
+|-------------|---------------------|
+| Audit trail visibility | Loki log queries by batch_id, device_id |
+| System availability | Uptime metrics, SLA dashboards |
+| Data integrity | Checksum verification metrics |
+| Access control | Authentication event logging |
+
+### Factory Operations Dashboard
+
+Beyond IT metrics, create business-level dashboards for packaging line operators:
+
+```promql
+# Overall Equipment Effectiveness (OEE)
+factory_oee_availability * factory_oee_performance * factory_oee_quality
+
+# Line throughput (products per hour)
+rate(factory_production_count_total[1h]) * 3600
+
+# Reject rate by line
+rate(factory_defect_count_total[1h]) / rate(factory_production_count_total[1h])
+```
+
+## Related Video Episodes
+
+| Episode | Relevance |
+|---------|-----------|
+| [03: Gateway Architecture](../video/episodes/03-gateway-architecture/README.md) | Metrics instrumentation in gateway |
+| [05: Device SDK](../video/episodes/05-device-sdk/README.md) | SDK metrics callback integration |
+| [06: Monitoring & Observability](../video/episodes/06-monitoring-observability/README.md) | **Primary episode** - Full walkthrough |
+| [07: Historical Retention](../video/episodes/07-historical-retention/README.md) | Long-term data archival |
+
+## Additional Resources
+
+- [Historical Data Retention](../compliance/HISTORICAL_DATA_RETENTION.md) - TimescaleDB historian integration
+- [Video Series Overview](../video/SERIES_OVERVIEW.md) - Complete learning path

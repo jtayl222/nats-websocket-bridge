@@ -76,11 +76,15 @@ nats sub "factory.line1.>"
 # Terminal 3: Connect with wscat
 wscat -c ws://localhost:5000/ws
 
-# After connection, authenticate:
-{"type":"AUTH","deviceId":"demo-device","credentials":{"apiKey":"test-key"}}
+# After connection, authenticate (type 8 = Auth):
+{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
 
 # Expected response:
-# {"type":"AUTH_RESPONSE","success":true,"deviceId":"demo-device"}
+# {"type":8,"payload":{"success":true,"device":{"deviceId":"demo-device",...}}}
+
+# Alternative devices to test:
+# {"type":8,"payload":{"deviceId":"SENSOR-001","token":"sensor-token"}}
+# {"type":8,"payload":{"deviceId":"sensor-temp-001","token":"temp-sensor-token-001"}}
 ```
 
 ---
@@ -88,13 +92,17 @@ wscat -c ws://localhost:5000/ws
 ## Demo 6: Publish Messages Through Gateway
 
 ```bash
-# In wscat session, publish telemetry:
-{"type":"PUBLISH","subject":"telemetry.demo-device.temperature","payload":{"value":23.5,"unit":"C"}}
+# In wscat session, publish telemetry (type 0 = Publish):
+{"type":0,"subject":"telemetry.demo-device.temperature","payload":{"value":23.5,"unit":"C"}}
 
 # Publish to a specific factory line:
-{"type":"PUBLISH","subject":"factory.line1.sensor.pressure","payload":{"value":101.3,"unit":"kPa"}}
+{"type":0,"subject":"factory.line1.sensor.pressure","payload":{"value":101.3,"unit":"kPa"}}
 
 # Watch Terminal 2 (nats sub) for the messages appearing
+
+# Message Types Reference:
+# 0 = Publish, 1 = Subscribe, 2 = Unsubscribe, 3 = Message (incoming)
+# 8 = Auth, 9 = Ping, 10 = Pong, 7 = Error
 ```
 
 ---
@@ -102,13 +110,16 @@ wscat -c ws://localhost:5000/ws
 ## Demo 7: Subscribe to Commands
 
 ```bash
-# In wscat session, subscribe to commands:
-{"type":"SUBSCRIBE","subject":"commands.demo-device.>"}
+# In wscat session, subscribe to commands (type 1 = Subscribe):
+{"type":1,"subject":"commands.demo-device.>"}
+
+# You should receive an ACK (type 6):
+# {"type":6,"subject":"commands.demo-device.>","correlationId":null,...}
 
 # Terminal 4: Send a command via NATS CLI
 nats pub commands.demo-device.restart '{"action":"restart","force":false}'
 
-# Watch wscat for the incoming message
+# Watch wscat for the incoming MESSAGE (type 3)
 ```
 
 ---
@@ -133,10 +144,14 @@ curl -s http://localhost:5000/metrics | grep gateway_connections
 ## Demo 9: Test Connection Limits
 
 ```bash
-# Script to create multiple connections
-for i in {1..10}; do
-  (wscat -c ws://localhost:5000/ws -x '{"type":"AUTH","deviceId":"device-'$i'","credentials":{"apiKey":"test-key"}}' &)
-done
+# Note: For multiple connections, use pre-registered devices
+# The demo-device and test-device are available for testing
+
+# Connect with demo-device
+wscat -c ws://localhost:5000/ws -x '{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}'
+
+# In another terminal, connect with test-device
+wscat -c ws://localhost:5000/ws -x '{"type":8,"payload":{"deviceId":"test-device","token":"test-token"}}'
 
 # Check active connections
 curl -s http://localhost:5000/metrics | grep gateway_connections_active

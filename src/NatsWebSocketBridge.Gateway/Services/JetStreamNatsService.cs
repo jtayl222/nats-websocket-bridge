@@ -940,7 +940,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             : Array.Empty<JetStreamSubscription>();
     }
 
-    private async Task<string?> FindStreamForSubjectAsync(string subject, CancellationToken cancellationToken)
+    private Task<string?> FindStreamForSubjectAsync(string subject, CancellationToken cancellationToken)
     {
         // Check configured streams first
         foreach (var streamConfig in _jetStreamOptions.Streams)
@@ -949,7 +949,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             {
                 if (SubjectMatchesPattern(subject, pattern))
                 {
-                    return streamConfig.Name;
+                    return Task.FromResult<string?>(streamConfig.Name);
                 }
             }
         }
@@ -960,11 +960,11 @@ public class JetStreamNatsService : IJetStreamNatsService
             var info = stream.Info;
             if (info.Config.Subjects?.Any(pattern => SubjectMatchesPattern(subject, pattern)) == true)
             {
-                return name;
+                return Task.FromResult<string?>(name);
             }
         }
 
-        return null;
+        return Task.FromResult<string?>(null);
     }
 
     private static bool SubjectMatchesPattern(string subject, string pattern)

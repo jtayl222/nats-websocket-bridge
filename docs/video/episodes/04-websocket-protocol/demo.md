@@ -23,11 +23,18 @@ nats sub ">"
 wscat -c ws://localhost:5000/ws
 
 # Connection established - now authenticate
-# Type this in wscat:
-{"type":"AUTH","deviceId":"SENSOR-001","credentials":{"apiKey":"sk_test_key123"}}
+# Message types: 0=Publish, 1=Subscribe, 8=Auth, 9=Ping, 7=Error
+# Type this in wscat (type 8 = Auth):
+{"type":8,"payload":{"deviceId":"SENSOR-001","token":"sensor-token"}}
 
-# Expected response:
-# {"type":"AUTH_RESPONSE","success":true,"deviceId":"SENSOR-001","permissions":{"publish":["telemetry.SENSOR-001.>"],"subscribe":["commands.SENSOR-001.>"]}}
+# Expected response (type 8 with success):
+# {"type":8,"payload":{"success":true,"device":{"deviceId":"SENSOR-001","deviceType":"sensor",...}}}
+
+# Available demo devices:
+# demo-device / demo-token - broad permissions for testing
+# test-device / test-token - general testing
+# SENSOR-001 / sensor-token - sensor simulation
+# sensor-temp-001 / temp-sensor-token-001 - temperature sensor
 ```
 
 **Talking Points:**
@@ -43,13 +50,17 @@ wscat -c ws://localhost:5000/ws
 # In a new wscat session:
 wscat -c ws://localhost:5000/ws
 
-# Send invalid credentials
-{"type":"AUTH","deviceId":"SENSOR-001","credentials":{"apiKey":"invalid-key"}}
+# Send invalid credentials (wrong token)
+{"type":8,"payload":{"deviceId":"SENSOR-001","token":"wrong-token"}}
 
-# Expected response:
-# {"type":"AUTH_RESPONSE","success":false,"code":401,"message":"Invalid API key"}
+# Expected response (type 8 with error):
+# {"type":8,"payload":{"success":false,"error":"Invalid token"}}
 
 # Connection will be closed by gateway
+
+# Try unregistered device:
+{"type":8,"payload":{"deviceId":"unknown-device","token":"any-token"}}
+# Response: {"type":8,"payload":{"success":false,"error":"Device not registered"}}
 ```
 
 ---
@@ -57,13 +68,13 @@ wscat -c ws://localhost:5000/ws
 ## Demo 3: Publishing Telemetry
 
 ```bash
-# In authenticated wscat session:
+# In authenticated wscat session (after auth with SENSOR-001):
 
-# Simple telemetry message
-{"type":"PUBLISH","subject":"telemetry.SENSOR-001.temperature","payload":{"value":23.5,"unit":"C"}}
+# Simple telemetry message (type 0 = Publish)
+{"type":0,"subject":"telemetry.SENSOR-001.temperature","payload":{"value":23.5,"unit":"C"}}
 
-# With headers for tracing
-{"type":"PUBLISH","subject":"telemetry.SENSOR-001.pressure","payload":{"value":101.3,"unit":"kPa"},"headers":{"correlationId":"msg-001","timestamp":"2024-01-15T10:30:00Z"}}
+# With correlation ID for tracing
+{"type":0,"subject":"telemetry.SENSOR-001.pressure","payload":{"value":101.3,"unit":"kPa"},"correlationId":"msg-001"}
 
 # Watch Terminal 3 (nats sub) for messages
 ```
@@ -73,11 +84,11 @@ wscat -c ws://localhost:5000/ws
 ## Demo 4: Permission Enforcement
 
 ```bash
-# Try to publish to unauthorized subject
-{"type":"PUBLISH","subject":"admin.system.restart","payload":{"force":true}}
+# Try to publish to unauthorized subject (type 0 = Publish)
+{"type":0,"subject":"admin.system.restart","payload":{"force":true}}
 
-# Expected error response:
-# {"type":"ERROR","code":403,"message":"Permission denied","details":"Cannot publish to 'admin.>' subjects"}
+# Expected error response (type 7 = Error):
+# {"type":7,"payload":{"error":"Not authorized to publish to admin.system.restart"}}
 ```
 
 ---
@@ -85,16 +96,17 @@ wscat -c ws://localhost:5000/ws
 ## Demo 5: Subscribe to Commands
 
 ```bash
-# Subscribe to device commands
-{"type":"SUBSCRIBE","subject":"commands.SENSOR-001.>"}
+# Subscribe to device commands (type 1 = Subscribe)
+{"type":1,"subject":"commands.SENSOR-001.>"}
 
-# Subscribe confirmation (implicit - no error means success)
+# Subscribe confirmation (type 6 = Ack):
+# {"type":6,"subject":"commands.SENSOR-001.>","correlationId":null,...}
 
 # Terminal 5: Send a command via NATS CLI
 nats pub commands.SENSOR-001.calibrate '{"action":"calibrate","offset":0.5}'
 
-# Watch wscat for incoming MESSAGE:
-# {"type":"MESSAGE","subject":"commands.SENSOR-001.calibrate","payload":{"action":"calibrate","offset":0.5}}
+# Watch wscat for incoming MESSAGE (type 3):
+# {"type":3,"subject":"commands.SENSOR-001.calibrate","payload":{...}}
 ```
 
 ---
@@ -102,16 +114,15 @@ nats pub commands.SENSOR-001.calibrate '{"action":"calibrate","offset":0.5}'
 ## Demo 6: Wildcard Subscriptions
 
 ```bash
-# Subscribe with single-token wildcard
-{"type":"SUBSCRIBE","subject":"commands.SENSOR-001.*"}
+# Subscribe with single-token wildcard (type 1 = Subscribe)
+{"type":1,"subject":"commands.SENSOR-001.*"}
 
 # Subscribe with multi-token wildcard
-{"type":"SUBSCRIBE","subject":"alerts.>"}
+{"type":1,"subject":"factory.line1.>"}
 
 # Test different patterns
 nats pub commands.SENSOR-001.restart '{}'
-nats pub commands.SENSOR-001.config.update '{}'
-nats pub alerts.factory.line1.critical '{"message":"Temperature high"}'
+nats pub factory.line1.alert '{"message":"Temperature high"}'
 ```
 
 ---
@@ -119,14 +130,17 @@ nats pub alerts.factory.line1.critical '{"message":"Temperature high"}'
 ## Demo 7: Request/Response
 
 ```bash
-# In wscat, send a request
-{"type":"REQUEST","subject":"services.config.get","payload":{"key":"sampling_rate"},"timeout":5000,"correlationId":"req-001"}
+# Note: Request/Response uses type 4 (Request)
+# This requires a NATS responder service
 
-# Terminal 5: Start a responder service
+# Terminal 5: Start a responder service first
 nats reply services.config.get '{"sampling_rate":1000}'
 
-# Watch wscat for response:
-# {"type":"RESPONSE","correlationId":"req-001","payload":{"sampling_rate":1000}}
+# In wscat, send a request (type 4 = Request)
+{"type":4,"subject":"services.config.get","payload":{"key":"sampling_rate"},"correlationId":"req-001"}
+
+# Watch wscat for response (type 5 = Reply):
+# {"type":5,"correlationId":"req-001","payload":{"sampling_rate":1000}}
 ```
 
 ---
@@ -134,11 +148,11 @@ nats reply services.config.get '{"sampling_rate":1000}'
 ## Demo 8: Keep-Alive Ping/Pong
 
 ```bash
-# In wscat, send ping
-{"type":"PING"}
+# In wscat, send ping (type 9 = Ping)
+{"type":9}
 
-# Immediate response:
-# {"type":"PONG","timestamp":"2024-01-15T10:30:00Z"}
+# Immediate response (type 10 = Pong):
+# {"type":10,"timestamp":"2024-01-15T10:30:00Z"}
 
 # Gateway also sends periodic pings - watch for them
 # If device doesn't respond, connection is closed
@@ -149,22 +163,22 @@ nats reply services.config.get '{"sampling_rate":1000}'
 ## Demo 9: Error Scenarios
 
 ```bash
-# Missing required field
-{"type":"PUBLISH","payload":{"value":23.5}}
-# Response: {"type":"ERROR","code":400,"message":"Bad Request","details":"PUBLISH requires 'subject' field"}
+# Missing required field (type 0 = Publish without subject)
+{"type":0,"payload":{"value":23.5}}
+# Response (type 7 = Error): {"type":7,"payload":{"error":"Subject is required"}}
 
 # Invalid message type
-{"type":"UNKNOWN","data":"test"}
-# Response: {"type":"ERROR","code":400,"message":"Unknown message type: UNKNOWN"}
+{"type":99,"data":"test"}
+# Response: {"type":7,"payload":{"error":"Invalid message format"}}
 
 # Invalid JSON
 {invalid json here
-# Response: {"type":"ERROR","code":400,"message":"Invalid JSON format"}
+# Connection may be closed or error returned
 
-# Publish before auth
-# (new connection without AUTH)
-{"type":"PUBLISH","subject":"test","payload":{}}
-# Response: {"type":"ERROR","code":401,"message":"Not authenticated"}
+# Publish before auth (new connection without AUTH)
+{"type":0,"subject":"test","payload":{}}
+# Response: {"type":7,"payload":{"error":"Authentication failed"}}
+# Connection closed
 ```
 
 ---
@@ -172,41 +186,43 @@ nats reply services.config.get '{"sampling_rate":1000}'
 ## Demo 10: Rate Limiting
 
 ```bash
-# Send many messages quickly (script)
-for i in {1..100}; do
-  echo '{"type":"PUBLISH","subject":"test.rapid","payload":{"i":'$i'}}'
-done | wscat -c ws://localhost:5000/ws
+# After authenticating, send many messages quickly
+# In wscat, paste rapidly:
+{"type":0,"subject":"test.rapid","payload":{"i":1}}
+{"type":0,"subject":"test.rapid","payload":{"i":2}}
+# ... continue rapidly
 
-# After threshold, expect:
-# {"type":"ERROR","code":429,"message":"Rate limit exceeded","details":"Max 100 messages per second"}
+# After threshold (100/sec default), expect:
+# {"type":7,"payload":{"error":"Rate limit exceeded"}}
 ```
 
 ---
 
-## Demo 11: Headers and Tracing
+## Demo 11: Correlation IDs and Tracing
 
 ```bash
-# Publish with full tracing headers
-{"type":"PUBLISH","subject":"telemetry.SENSOR-001.data","payload":{"value":42},"headers":{"correlationId":"corr-123","traceId":"trace-abc","spanId":"span-001","source":"factory-floor","version":"1.2.0"}}
+# Publish with correlation ID for tracing (type 0 = Publish)
+{"type":0,"subject":"telemetry.SENSOR-001.data","payload":{"value":42},"correlationId":"corr-123"}
 
-# Check NATS message headers
-nats sub "telemetry.>" --headers
+# Check NATS messages
+nats sub "telemetry.>"
 
-# Headers are preserved through the gateway
+# The gateway adds deviceId and timestamp automatically
 ```
 
 ---
 
-## Demo 12: Binary Payload (Base64)
+## Demo 12: JSON Payloads
 
 ```bash
-# Send binary data as base64
-{"type":"PUBLISH","subject":"telemetry.SENSOR-001.image","payloadEncoding":"base64","payload":"SGVsbG8gV29ybGQh","headers":{"contentType":"application/octet-stream"}}
+# Payload can contain any valid JSON (type 0 = Publish)
+{"type":0,"subject":"telemetry.SENSOR-001.complex","payload":{"readings":[1.2,3.4,5.6],"metadata":{"unit":"C","quality":"good"}}}
 
-# "SGVsbG8gV29ybGQh" is "Hello World!" in base64
+# Arrays work too
+{"type":0,"subject":"telemetry.SENSOR-001.batch","payload":[{"t":1,"v":23.5},{"t":2,"v":23.7}]}
 
-# Receive and decode
-nats sub "telemetry.SENSOR-001.image" | base64 -d
+# Check NATS
+nats sub "telemetry.SENSOR-001.>"
 ```
 
 ---
@@ -214,17 +230,17 @@ nats sub "telemetry.SENSOR-001.image" | base64 -d
 ## Demo 13: Multiple Subscriptions
 
 ```bash
-# Subscribe to multiple subjects
-{"type":"SUBSCRIBE","subject":"commands.SENSOR-001.>"}
-{"type":"SUBSCRIBE","subject":"alerts.factory.>"}
-{"type":"SUBSCRIBE","subject":"config.updates"}
+# Subscribe to multiple subjects (type 1 = Subscribe)
+{"type":1,"subject":"commands.SENSOR-001.>"}
+{"type":1,"subject":"factory.line1.>"}
+
+# Each subscription returns an ACK (type 6)
 
 # Send to each
 nats pub commands.SENSOR-001.restart '{}'
-nats pub alerts.factory.line1.warning '{"msg":"low pressure"}'
-nats pub config.updates '{"version":"2.0"}'
+nats pub factory.line1.alert '{"msg":"low pressure"}'
 
-# All three should appear in wscat
+# Both messages should appear in wscat as type 3 (Message)
 ```
 
 ---
@@ -272,17 +288,23 @@ docker stop nats && docker rm nats
 
 ## Troubleshooting
 
-### "Not authenticated" on every message
-- Ensure AUTH is sent first after connection
-- Check API key is valid
-- Verify AUTH_RESPONSE shows success:true
+### "Authentication failed" on every message
+- Ensure AUTH (type 8) is sent first after connection
+- Use correct format: `{"type":8,"payload":{"deviceId":"...","token":"..."}}`
+- Use registered device: demo-device/demo-token, SENSOR-001/sensor-token
+- Verify response shows `"success":true`
 
 ### Messages not reaching NATS
-- Check subject matches permissions
-- Verify NATS subscription pattern
-- Look at gateway logs for errors
+- Check subject matches device's allowed publish topics
+- Verify NATS subscription pattern matches
+- Look at gateway logs for authorization errors
 
 ### Connection drops unexpectedly
-- Check for PING/PONG timeout
+- Check for PING/PONG timeout (send type 9 to keep alive)
 - Verify network stability
-- Check gateway idle timeout setting
+- Check gateway idle timeout setting (default 30s auth timeout)
+
+### Message Type Reference
+- 0: Publish, 1: Subscribe, 2: Unsubscribe
+- 3: Message (incoming), 4: Request, 5: Reply
+- 6: Ack, 7: Error, 8: Auth, 9: Ping, 10: Pong

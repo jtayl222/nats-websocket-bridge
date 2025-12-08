@@ -1,15 +1,18 @@
 # Episode 04: WebSocket Protocol
 
 **Duration:** 10-12 minutes
-**Prerequisites:** Episodes 01-03
+**Prerequisites:** [Episode 01](../01-intro/README.md), [Episode 02](../02-nats-fundamentals/README.md), [Episode 03](../03-gateway-architecture/README.md)
+**Series:** [NATS WebSocket Bridge Video Series](../../SERIES_OVERVIEW.md) (4 of 7)
+
+> **Hands-on Guide:** For a comprehensive developer tutorial with state diagrams, sequence diagrams, and unit testing patterns, see [WebSocket Developer Tutorial](WS_DEVELOPER_TUTORIAL.md).
 
 ## Learning Objectives
 
 By the end of this episode, viewers will understand:
-- WebSocket authentication flow
-- Message format design (JSON envelope)
-- Publish, subscribe, and request patterns
-- Error handling and reconnection
+- WebSocket authentication flow with device credentials
+- Message format design (JSON envelope with numeric type codes)
+- Publish, subscribe, and request patterns for telemetry and commands
+- Error handling and reconnection strategies for factory floor reliability
 
 ## Outline
 
@@ -50,43 +53,40 @@ By the end of this episode, viewers will understand:
 
 ## Message Format Examples
 
+The protocol uses numeric message types for efficiency:
+
+| Type | Code | Direction | Description |
+|------|------|-----------|-------------|
+| Publish | 0 | Client → Server | Send telemetry to NATS |
+| Subscribe | 1 | Client → Server | Subscribe to subjects |
+| Unsubscribe | 2 | Client → Server | Unsubscribe from subjects |
+| Message | 3 | Server → Client | Incoming subscribed message |
+| Request | 4 | Client → Server | Request/reply pattern |
+| Reply | 5 | Server → Client | Response to request |
+| Ack | 6 | Server → Client | Subscription confirmation |
+| Error | 7 | Server → Client | Error response |
+| Auth | 8 | Bidirectional | Authentication |
+| Ping | 9 | Client → Server | Keep-alive |
+| Pong | 10 | Server → Client | Keep-alive response |
+
 ```json
-// Authentication
-{
-  "type": "AUTH",
-  "deviceId": "SENSOR-001",
-  "credentials": {
-    "apiKey": "sk_live_..."
-  }
-}
+// Authentication (type 8)
+{"type":8,"payload":{"deviceId":"SENSOR-001","token":"sensor-token"}}
 
-// Publish Telemetry
-{
-  "type": "PUBLISH",
-  "subject": "factory.line1.sensor.temp",
-  "payload": {
-    "value": 23.5,
-    "unit": "C",
-    "timestamp": "2024-01-15T10:30:00Z"
-  },
-  "headers": {
-    "correlationId": "abc-123"
-  }
-}
+// Successful auth response
+{"type":8,"payload":{"success":true,"device":{"deviceId":"SENSOR-001","deviceType":"sensor"}}}
 
-// Subscribe to Commands
-{
-  "type": "SUBSCRIBE",
-  "subject": "commands.SENSOR-001.>"
-}
+// Publish Telemetry (type 0)
+{"type":0,"subject":"factory.line1.sensor.temp","payload":{"value":23.5,"unit":"C"},"correlationId":"abc-123"}
 
-// Error Response
-{
-  "type": "ERROR",
-  "code": 401,
-  "message": "Authentication failed",
-  "details": "Invalid API key"
-}
+// Subscribe to Commands (type 1)
+{"type":1,"subject":"commands.SENSOR-001.>"}
+
+// Incoming Message (type 3)
+{"type":3,"subject":"commands.SENSOR-001.calibrate","payload":{"action":"calibrate","offset":0.5}}
+
+// Error Response (type 7)
+{"type":7,"payload":{"error":"Not authorized to publish to admin.system.restart"}}
 ```
 
 ## Demo
@@ -95,15 +95,23 @@ By the end of this episode, viewers will understand:
 # Connect and authenticate
 wscat -c ws://localhost:5000/ws
 
-# Send auth message
-{"type":"AUTH","deviceId":"demo-001","credentials":{"apiKey":"test-key"}}
+# Send auth message (type 8 = Auth)
+{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
 
-# Publish telemetry
-{"type":"PUBLISH","subject":"factory.line1.sensor.temp","payload":{"value":23.5}}
+# Publish telemetry (type 0 = Publish)
+{"type":0,"subject":"telemetry.demo-device.temp","payload":{"value":23.5}}
 
-# Subscribe to commands
-{"type":"SUBSCRIBE","subject":"commands.demo-001.>"}
+# Subscribe to commands (type 1 = Subscribe)
+{"type":1,"subject":"commands.demo-device.>"}
+
+# Keep-alive ping (type 9 = Ping)
+{"type":9}
 ```
+
+**Available test credentials:**
+- `demo-device` / `demo-token` - Broad permissions for testing
+- `SENSOR-001` / `sensor-token` - Sensor simulation
+- `test-device` / `test-token` - General testing
 
 ## Key Visuals
 
@@ -111,3 +119,31 @@ wscat -c ws://localhost:5000/ws
 - Message type decision tree
 - JSON schema visualization
 - Error code reference table
+
+## Pharmaceutical Telemetry Examples
+
+Typical message patterns from packaging line equipment:
+
+```json
+// Blister sealer temperature monitoring
+{"type":0,"subject":"telemetry.line1.blister-sealer.temperature","payload":{"value":185.5,"unit":"C","zone":"upper","batchId":"B2024-001"}}
+
+// Cartoner reject event
+{"type":0,"subject":"events.line1.cartoner.reject","payload":{"reason":"missing_leaflet","productId":"ABC123","timestamp":"2024-01-15T10:30:00Z"}}
+
+// Case packer weight verification
+{"type":0,"subject":"quality.line1.case-packer.weight","payload":{"measured":5.234,"target":5.200,"tolerance":0.050,"status":"pass"}}
+
+// Alert: Temperature excursion
+{"type":0,"subject":"alerts.line1.blister-sealer.temperature-high","payload":{"value":195.2,"threshold":190.0,"severity":"warning"}}
+```
+
+## Related Documentation
+
+- [WebSocket Developer Tutorial](WS_DEVELOPER_TUTORIAL.md) - Comprehensive implementation guide
+- [Episode 03: Gateway Architecture](../03-gateway-architecture/README.md) - Server-side handling
+- [Episode 05: Device SDK](../05-device-sdk/README.md) - C++ client implementation
+
+## Next Episode
+
+→ [Episode 05: Device SDK](../05-device-sdk/README.md) - Building the C++ SDK for embedded devices

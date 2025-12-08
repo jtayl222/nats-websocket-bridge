@@ -56,21 +56,25 @@ curl -s http://localhost:5000/metrics | grep gateway_connections
 ## Demo 3: Generate Traffic for Metrics
 
 ```bash
-# Terminal 3: Connect multiple devices
-for i in {1..5}; do
-  (wscat -c ws://localhost:5000/ws -x '{"type":"AUTH","deviceId":"device-'$i'","credentials":{"apiKey":"test"}}' &)
-done
+# Terminal 3: Connect demo device
+wscat -c ws://localhost:5000/ws
+
+# Authenticate (type 8 = Auth)
+{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
 
 # Check connection metrics
 curl -s http://localhost:5000/metrics | grep gateway_connections_active
-# gateway_connections_active 5
 
-# Send messages
-wscat -c ws://localhost:5000/ws -x '{"type":"AUTH","deviceId":"demo","credentials":{"apiKey":"test"}}' \
-  -x '{"type":"PUBLISH","subject":"test.data","payload":{"value":42}}'
+# Send messages (type 0 = Publish)
+{"type":0,"subject":"telemetry.demo-device.data","payload":{"value":42}}
 
 # Check message metrics
 curl -s http://localhost:5000/metrics | grep gateway_messages
+
+# Available test devices:
+# demo-device / demo-token
+# SENSOR-001 / sensor-token
+# test-device / test-token
 ```
 
 ---
@@ -259,12 +263,16 @@ Annotations:
 ## Demo 12: Trigger an Alert
 
 ```bash
-# Rapidly connect/disconnect to trigger alert
-for i in {1..20}; do
-  wscat -c ws://localhost:5000/ws -x '{"type":"AUTH","deviceId":"test-'$i'","credentials":{"apiKey":"test"}}' &
-  sleep 0.5
-  pkill -f "wscat.*test-$i"
-done
+# Connect and disconnect rapidly to trigger alert
+# Use demo-device with correct credentials
+
+# Connect
+wscat -c ws://localhost:5000/ws
+{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+# Disconnect (Ctrl+C)
+
+# Repeat several times rapidly
+# This may trigger connection drop rate alerts
 
 # Watch Alertmanager
 open http://localhost:9093
@@ -339,15 +347,19 @@ docker-compose logs -f gateway
 # Terminal 2: Watch metrics
 watch -n 1 'curl -s http://localhost:5000/metrics | grep gateway_connections'
 
-# Terminal 3: Generate traffic
-while true; do
-  wscat -c ws://localhost:5000/ws \
-    -x '{"type":"AUTH","deviceId":"load-test","credentials":{"apiKey":"test"}}' \
-    -x '{"type":"PUBLISH","subject":"test.load","payload":{"i":'$RANDOM'}}'
-  sleep 0.1
-done
+# Terminal 3: Generate traffic with wscat
+wscat -c ws://localhost:5000/ws
+
+# Authenticate
+{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+
+# Send continuous telemetry
+{"type":0,"subject":"telemetry.demo-device.load","payload":{"i":1}}
+{"type":0,"subject":"telemetry.demo-device.load","payload":{"i":2}}
+# ... continue
 
 # Observe in Grafana dashboard
+open http://localhost:3000
 ```
 
 ---

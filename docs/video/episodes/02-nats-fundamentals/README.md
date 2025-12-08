@@ -1,15 +1,16 @@
 # Episode 02: NATS Fundamentals
 
 **Duration:** 12-15 minutes
-**Prerequisites:** Episode 01
+**Prerequisites:** [Episode 01: Introduction](../01-intro/README.md)
+**Series:** [NATS WebSocket Bridge Video Series](../../SERIES_OVERVIEW.md) (2 of 7)
 
 ## Learning Objectives
 
 By the end of this episode, viewers will understand:
 - NATS core concepts: subjects, pub/sub, request/reply
-- JetStream streams and consumers
-- Message persistence and replay
-- Practical subject hierarchy design
+- JetStream streams and consumers for durable message storage
+- Message persistence and replay for batch investigation
+- Practical subject hierarchy design for pharmaceutical packaging lines
 
 ## Outline
 
@@ -76,3 +77,31 @@ nats consumer add TELEMETRY historian --pull --deliver all --ack explicit
 - Stream vs Consumer relationship
 - Message flow animation
 - Acknowledgement sequence diagram
+
+## Subject Design for Pharmaceutical Packaging
+
+The subject hierarchy maps directly to packaging line organization:
+
+```
+factory.{plant}.{line}.{device}.{metric}
+│       │      │      │        └─ temperature, pressure, count, state
+│       │      │      └─ blister-sealer-01, cartoner-02, case-packer-01
+│       │      └─ line1, line2, serialization
+│       └─ chicago, dublin, singapore
+└─ Root for all factory telemetry
+```
+
+**Example subjects for a blister packaging line:**
+- `factory.chicago.line1.blister-sealer-01.temperature` - Seal temperature
+- `factory.chicago.line1.vision-system-01.reject` - Reject events
+- `alerts.chicago.line1.temperature-excursion` - Critical alerts
+- `batch.B2024-001.start` - Batch lifecycle events
+
+## Related Documentation
+
+- [Historical Data Retention](../../../compliance/HISTORICAL_DATA_RETENTION.md) - How JetStream feeds the historian service
+- [Episode 07: Historical Retention](../07-historical-retention/README.md) - Deep dive into data archival
+
+## Next Episode
+
+→ [Episode 03: Gateway Architecture](../03-gateway-architecture/README.md) - Building the C# WebSocket gateway
