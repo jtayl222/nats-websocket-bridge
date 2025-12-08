@@ -99,6 +99,7 @@ factory.{plant}.{line}.{device}.{metric}
 
 ## Related Documentation
 
+- [JetStream vs Core NATS](../../../architecture/JETSTREAM_VS_CORE_NATS.md) - Detailed pros/cons comparison for pharma applications
 - [Historical Data Retention](../../../compliance/HISTORICAL_DATA_RETENTION.md) - How JetStream feeds the historian service
 - [Episode 07: Historical Retention](../07-historical-retention/README.md) - Deep dive into data archival
 

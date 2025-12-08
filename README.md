@@ -248,6 +248,7 @@ quality.{line}.{equipment}.{inspection-type}
 | Document | Description |
 |----------|-------------|
 | [Video Series Overview](docs/video/SERIES_OVERVIEW.md) | 7-episode learning path |
+| [JetStream vs Core NATS](docs/architecture/JETSTREAM_VS_CORE_NATS.md) | Messaging pattern decision guide |
 | [WebSocket Developer Tutorial](docs/video/episodes/04-websocket-protocol/WS_DEVELOPER_TUTORIAL.md) | Hands-on protocol guide |
 | [Monitoring Architecture](docs/monitoring/MONITORING_ARCHITECTURE.md) | PLG stack design |
 | [Historical Data Retention](docs/compliance/HISTORICAL_DATA_RETENTION.md) | FDA 21 CFR Part 11 compliance |

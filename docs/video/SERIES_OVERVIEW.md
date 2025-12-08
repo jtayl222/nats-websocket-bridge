@@ -104,6 +104,7 @@ episodes/
 
 | Document | Description | Relevant Episodes |
 |----------|-------------|-------------------|
+| [JetStream vs Core NATS](../architecture/JETSTREAM_VS_CORE_NATS.md) | Messaging pattern pros/cons, decision guide | Episodes 02, 07 |
 | [Monitoring Architecture](../monitoring/MONITORING_ARCHITECTURE.md) | PLG stack design, metrics, alerting | Episode 06 |
 | [Historical Data Retention](../compliance/HISTORICAL_DATA_RETENTION.md) | FDA 21 CFR Part 11, TimescaleDB, ALCOA+ | Episode 07 |
 | [WebSocket Developer Tutorial](episodes/04-websocket-protocol/WS_DEVELOPER_TUTORIAL.md) | Hands-on protocol implementation guide | Episode 04 |
