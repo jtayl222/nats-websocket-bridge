@@ -1,10 +1,10 @@
 # Video Production Assets
 
-Complete production package for the YouTube series: **"NATS WebSocket Bridge - Real-Time Device Communication"**
+Complete production package for the YouTube series: **"NATS WebSocket Bridge for Pharmaceutical Manufacturing"**
 
 ## Series Structure
 
-A 7-episode deep dive into building production-grade IoT messaging infrastructure.
+A 7-episode deep dive into building FDA 21 CFR Part 11 compliant IoT messaging infrastructure for pharmaceutical packaging lines.
 
 | # | Episode | Duration | Status |
 |---|---------|----------|--------|
@@ -19,6 +19,13 @@ A 7-episode deep dive into building production-grade IoT messaging infrastructur
 **Total Runtime:** ~85-100 minutes
 
 See [SERIES_OVERVIEW.md](./SERIES_OVERVIEW.md) for detailed planning.
+
+## Target Audience
+
+- **Software Architects & CIOs** evaluating messaging patterns for regulated manufacturing
+- **Backend/IoT Engineers** building packaging line device communication systems
+- **Validation Engineers** evaluating FDA 21 CFR Part 11 compliance
+- **Packaging Line Engineers** understanding IoT connectivity for blister lines, cartoners, case packers
 
 ## Quick Start
 
