@@ -9,7 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.6" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
-    <PackageReference Include="NATS.Net" Version="2.6.11" />
+    <PackageReference Include="NATS.Client" Version="1.1.6" />
 
     <!-- OpenTelemetry for distributed tracing and metrics -->
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.9.0" />

@@ -131,8 +131,8 @@ classDiagram
     }
 
     class JetStreamNatsService {
-        -_connection: NatsConnection
-        -_jetStream: NatsJSContext
+        -_connection: IConnection
+        -_jetStream: IJetStream
         -_options: JetStreamOptions
         -_subscriptions: ConcurrentDictionary
         +InitializeAsync(token)

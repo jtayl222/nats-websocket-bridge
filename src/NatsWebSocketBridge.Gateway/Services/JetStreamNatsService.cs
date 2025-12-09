@@ -2,43 +2,57 @@ using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using NATS.Client.Core;
+using NATS.Client;
 using NATS.Client.JetStream;
-using NATS.Client.JetStream.Models;
 using NatsWebSocketBridge.Gateway.Configuration;
+
+// Type aliases to resolve ambiguity between NATS.Client.JetStream and local Configuration types
+using NatsStreamConfig = NATS.Client.JetStream.StreamConfiguration;
+using NatsConsumerConfig = NATS.Client.JetStream.ConsumerConfiguration;
+using NatsStreamInfo = NATS.Client.JetStream.StreamInfo;
+using NatsConsumerInfo = NATS.Client.JetStream.ConsumerInfo;
+using NatsAckPolicy = NATS.Client.JetStream.AckPolicy;
+using NatsReplayPolicy = NATS.Client.JetStream.ReplayPolicy;
+using NatsDeliverPolicy = NATS.Client.JetStream.DeliverPolicy;
+using GatewayStreamConfig = NatsWebSocketBridge.Gateway.Configuration.StreamConfiguration;
+using GatewayConsumerConfig = NatsWebSocketBridge.Gateway.Configuration.ConsumerConfiguration;
+using GatewayJetStreamOptions = NatsWebSocketBridge.Gateway.Configuration.JetStreamOptions;
+using NatsClientOptions = NATS.Client.Options;
+using Duration = NATS.Client.Internals.Duration;
 
 namespace NatsWebSocketBridge.Gateway.Services;
 
 /// <summary>
-/// Production-grade JetStream NATS service implementation
+/// Production-grade JetStream NATS service implementation (NATS.Client v1 API)
 /// </summary>
 public class JetStreamNatsService : IJetStreamNatsService
 {
     private readonly ILogger<JetStreamNatsService> _logger;
     private readonly NatsOptions _natsOptions;
-    private readonly JetStreamOptions _jetStreamOptions;
-    
-    private NatsConnection? _connection;
-    private NatsJSContext? _jetStream;
-    
-    private readonly ConcurrentDictionary<string, INatsJSStream> _streams = new();
-    private readonly ConcurrentDictionary<string, INatsJSConsumer> _consumers = new();
+    private readonly GatewayJetStreamOptions _jetStreamOptions;
+
+    private IConnection? _connection;
+    private IJetStream? _jetStream;
+    private IJetStreamManagement? _jetStreamManagement;
+
+    private readonly ConcurrentDictionary<string, NatsStreamInfo> _streams = new();
+    private readonly ConcurrentDictionary<string, NatsConsumerInfo> _consumers = new();
     private readonly ConcurrentDictionary<string, SubscriptionState> _subscriptions = new();
     private readonly ConcurrentDictionary<string, List<JetStreamSubscription>> _deviceSubscriptions = new();
     private readonly ConcurrentDictionary<string, SharedConsumerState> _sharedConsumers = new();
-    
+
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly Random _jitterRandom = new();
-    
+
     private bool _disposed;
 
-    public bool IsConnected => _connection?.ConnectionState == NatsConnectionState.Open;
+    public bool IsConnected => _connection?.State == ConnState.CONNECTED;
     public bool IsJetStreamAvailable => _jetStream != null;
 
     public JetStreamNatsService(
         ILogger<JetStreamNatsService> logger,
         IOptions<NatsOptions> natsOptions,
-        IOptions<JetStreamOptions> jetStreamOptions)
+        IOptions<GatewayJetStreamOptions> jetStreamOptions)
     {
         _logger = logger;
         _natsOptions = natsOptions.Value;
@@ -60,14 +74,15 @@ public class JetStreamNatsService : IJetStreamNatsService
 
             _logger.LogInformation("Connecting to NATS at {Url}", _natsOptions.Url);
 
-            var opts = new NatsOpts
-            {
-                Url = _natsOptions.Url,
-                Name = _natsOptions.ClientName
-            };
+            var opts = ConnectionFactory.GetDefaultOptions();
+            opts.Url = _natsOptions.Url;
+            opts.Name = _natsOptions.ClientName;
+            opts.AllowReconnect = true;
+            opts.MaxReconnect = NatsClientOptions.ReconnectForever;
+            opts.ReconnectWait = 1000;
 
-            _connection = new NatsConnection(opts);
-            await _connection.ConnectAsync();
+            var factory = new ConnectionFactory();
+            _connection = factory.CreateConnection(opts);
 
             _logger.LogInformation("Connected to NATS server");
 
@@ -82,11 +97,12 @@ public class JetStreamNatsService : IJetStreamNatsService
         }
     }
 
-    private async Task InitializeJetStreamAsync(CancellationToken cancellationToken)
+    private Task InitializeJetStreamAsync(CancellationToken cancellationToken)
     {
         try
         {
-            _jetStream = new NatsJSContext(_connection!);
+            _jetStream = _connection!.CreateJetStreamContext();
+            _jetStreamManagement = _connection.CreateJetStreamManagementContext();
             _logger.LogInformation("JetStream context initialized");
 
             // Create configured streams
@@ -94,7 +110,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             {
                 try
                 {
-                    await EnsureStreamExistsAsync(streamConfig, cancellationToken);
+                    EnsureStreamExistsSync(streamConfig);
                 }
                 catch (Exception ex)
                 {
@@ -107,7 +123,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             {
                 try
                 {
-                    await GetOrCreateConsumerAsync(consumerConfig, cancellationToken);
+                    GetOrCreateConsumerSync(consumerConfig);
                 }
                 catch (Exception ex)
                 {
@@ -123,134 +139,150 @@ public class JetStreamNatsService : IJetStreamNatsService
         {
             _logger.LogWarning(ex, "JetStream not available, service will operate in degraded mode");
             _jetStream = null;
+            _jetStreamManagement = null;
         }
+
+        return Task.CompletedTask;
     }
 
     #endregion
 
     #region Stream Management
 
-    public async Task<StreamInfo> EnsureStreamExistsAsync(StreamConfiguration config, CancellationToken cancellationToken = default)
+    public Task<StreamInfo> EnsureStreamExistsAsync(GatewayStreamConfig config, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(EnsureStreamExistsSync(config));
+    }
+
+    private StreamInfo EnsureStreamExistsSync(GatewayStreamConfig config)
     {
         EnsureJetStreamAvailable();
 
         var streamKey = config.Name;
-        
+
         try
         {
             // Try to get existing stream
-            var existingStream = await _jetStream!.GetStreamAsync(config.Name, cancellationToken: cancellationToken);
+            var existingStream = _jetStreamManagement!.GetStreamInfo(config.Name);
             _streams[streamKey] = existingStream;
-            
+
             _logger.LogInformation("Stream {StreamName} already exists with {MessageCount} messages",
-                config.Name, existingStream.Info.State.Messages);
-            
-            return MapStreamInfo(existingStream.Info);
+                config.Name, existingStream.State.Messages);
+
+            return MapStreamInfo(existingStream);
         }
-        catch (NatsJSApiException ex) when (ex.Error.Code == 404)
+        catch (NATSJetStreamException ex) when (ex.ErrorCode == 10059) // Stream not found
         {
             // Stream doesn't exist, create it
             _logger.LogInformation("Creating stream {StreamName} with subjects: {Subjects}",
                 config.Name, string.Join(", ", config.Subjects));
 
             var natsStreamConfig = BuildStreamConfig(config);
-            var newStream = await _jetStream!.CreateStreamAsync(natsStreamConfig, cancellationToken);
+            var newStream = _jetStreamManagement!.AddStream(natsStreamConfig);
             _streams[streamKey] = newStream;
 
             _logger.LogInformation("Stream {StreamName} created successfully", config.Name);
-            
-            return MapStreamInfo(newStream.Info);
+
+            return MapStreamInfo(newStream);
         }
     }
 
-    public async Task<StreamInfo?> GetStreamInfoAsync(string streamName, CancellationToken cancellationToken = default)
+    public Task<StreamInfo?> GetStreamInfoAsync(string streamName, CancellationToken cancellationToken = default)
     {
         EnsureJetStreamAvailable();
 
         try
         {
-            var stream = await _jetStream!.GetStreamAsync(streamName, cancellationToken: cancellationToken);
-            return MapStreamInfo(stream.Info);
+            var stream = _jetStreamManagement!.GetStreamInfo(streamName);
+            return Task.FromResult<StreamInfo?>(MapStreamInfo(stream));
         }
-        catch (NatsJSApiException ex) when (ex.Error.Code == 404)
+        catch (NATSJetStreamException ex) when (ex.ErrorCode == 10059)
         {
-            return null;
+            return Task.FromResult<StreamInfo?>(null);
         }
     }
 
-    public async Task<bool> DeleteStreamAsync(string streamName, CancellationToken cancellationToken = default)
+    public Task<bool> DeleteStreamAsync(string streamName, CancellationToken cancellationToken = default)
     {
         EnsureJetStreamAvailable();
 
         try
         {
-            await _jetStream!.DeleteStreamAsync(streamName, cancellationToken);
+            _jetStreamManagement!.DeleteStream(streamName);
             _streams.TryRemove(streamName, out _);
-            
+
             _logger.LogInformation("Stream {StreamName} deleted", streamName);
-            return true;
+            return Task.FromResult(true);
         }
-        catch (NatsJSApiException ex) when (ex.Error.Code == 404)
+        catch (NATSJetStreamException ex) when (ex.ErrorCode == 10059)
         {
             _logger.LogWarning("Stream {StreamName} not found for deletion", streamName);
-            return false;
+            return Task.FromResult(false);
         }
     }
 
-    public async Task<long> PurgeStreamAsync(string streamName, string? filterSubject = null, CancellationToken cancellationToken = default)
+    public Task<long> PurgeStreamAsync(string streamName, string? filterSubject = null, CancellationToken cancellationToken = default)
     {
         EnsureJetStreamAvailable();
 
-        var stream = await _jetStream!.GetStreamAsync(streamName, cancellationToken: cancellationToken);
-        
-        var request = new StreamPurgeRequest
+        PurgeResponse response;
+        if (!string.IsNullOrEmpty(filterSubject))
         {
-            Filter = filterSubject
-        };
-        
-        var response = await stream.PurgeAsync(request, cancellationToken);
-        
+            var options = PurgeOptions.Builder().WithSubject(filterSubject).Build();
+            response = _jetStreamManagement!.PurgeStream(streamName, options);
+        }
+        else
+        {
+            response = _jetStreamManagement!.PurgeStream(streamName);
+        }
+
         _logger.LogInformation("Purged {PurgedCount} messages from stream {StreamName}", response.Purged, streamName);
-        
-        return (long)response.Purged;
+
+        return Task.FromResult((long)response.Purged);
     }
 
-    private StreamConfig BuildStreamConfig(StreamConfiguration config)
+    private NatsStreamConfig BuildStreamConfig(GatewayStreamConfig config)
     {
         var subjects = config.Subjects.Count > 0 ? config.Subjects : new List<string> { $"{config.Name.ToLower()}.>" };
-        
-        return new StreamConfig(config.Name, subjects)
+
+        var builder = NatsStreamConfig.Builder()
+            .WithName(config.Name)
+            .WithSubjects(subjects)
+            .WithDescription(config.Description)
+            .WithRetentionPolicy(config.Retention switch
+            {
+                StreamRetentionPolicy.Interest => RetentionPolicy.Interest,
+                StreamRetentionPolicy.WorkQueue => RetentionPolicy.WorkQueue,
+                _ => RetentionPolicy.Limits
+            })
+            .WithStorageType(config.Storage switch
+            {
+                StreamStorageType.File => StorageType.File,
+                _ => StorageType.Memory
+            })
+            .WithMaxAge(Duration.OfMillis((long)DurationParser.Parse(config.MaxAge).TotalMilliseconds))
+            .WithMaxMessages(config.MaxMessages)
+            .WithMaximumMessageSize(config.MaxMessageSize)
+            .WithReplicas(config.Replicas)
+            .WithDiscardPolicy(config.Discard switch
+            {
+                StreamDiscardPolicy.New => DiscardPolicy.New,
+                _ => DiscardPolicy.Old
+            })
+            .WithAllowDirect(config.AllowDirect)
+            .WithAllowRollup(config.AllowRollup)
+            .WithDenyDelete(config.DenyDelete)
+            .WithDenyPurge(config.DenyPurge);
+
+        if (config.MaxBytes > 0)
         {
-            Description = config.Description,
-            Retention = config.Retention switch
-            {
-                StreamRetentionPolicy.Interest => StreamConfigRetention.Interest,
-                StreamRetentionPolicy.WorkQueue => StreamConfigRetention.Workqueue,
-                _ => StreamConfigRetention.Limits
-            },
-            Storage = config.Storage switch
-            {
-                StreamStorageType.File => StreamConfigStorage.File,
-                _ => StreamConfigStorage.Memory
-            },
-            MaxAge = DurationParser.Parse(config.MaxAge),
-            MaxMsgs = config.MaxMessages,
-            MaxBytes = config.MaxBytes,
-            MaxMsgSize = config.MaxMessageSize,
-            NumReplicas = config.Replicas,
-            Discard = config.Discard switch
-            {
-                StreamDiscardPolicy.New => StreamConfigDiscard.New,
-                _ => StreamConfigDiscard.Old
-            },
-            AllowDirect = config.AllowDirect,
-            AllowRollupHdrs = config.AllowRollup,
-            DenyDelete = config.DenyDelete,
-            DenyPurge = config.DenyPurge
-        };
+            builder.WithMaxBytes(config.MaxBytes);
+        }
+
+        return builder.Build();
     }
 
-    private static StreamInfo MapStreamInfo(NATS.Client.JetStream.Models.StreamInfo info)
+    private static StreamInfo MapStreamInfo(NatsStreamInfo info)
     {
         return new StreamInfo
         {
@@ -261,7 +293,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             ConsumerCount = (int)info.State.ConsumerCount,
             FirstSequence = info.State.FirstSeq,
             LastSequence = info.State.LastSeq,
-            Created = info.Created.UtcDateTime
+            Created = info.Created
         };
     }
 
@@ -297,22 +329,25 @@ public class JetStreamNatsService : IJetStreamNatsService
         {
             try
             {
-                var opts = new NatsJSPubOpts
+                var optsBuilder = PublishOptions.Builder();
+                if (!string.IsNullOrEmpty(messageId))
                 {
-                    MsgId = messageId
-                };
+                    optsBuilder.WithMessageId(messageId);
+                }
+                var opts = optsBuilder.Build();
 
-                NatsHeaders? natsHeaders = null;
+                MsgHeader? natsHeaders = null;
                 if (headers != null && headers.Count > 0)
                 {
-                    natsHeaders = new NatsHeaders();
+                    natsHeaders = new MsgHeader();
                     foreach (var (key, value) in headers)
                     {
                         natsHeaders.Add(key, value);
                     }
                 }
 
-                var ack = await _jetStream!.PublishAsync(subject, data, opts: opts, headers: natsHeaders, cancellationToken: cancellationToken);
+                var msg = new Msg(subject, natsHeaders, data);
+                var ack = _jetStream!.Publish(msg, opts);
 
                 _logger.LogDebug("Published message to {Subject}. Stream: {Stream}, Seq: {Sequence}, Duplicate: {Duplicate}",
                     subject, ack.Stream, ack.Seq, ack.Duplicate);
@@ -326,27 +361,27 @@ public class JetStreamNatsService : IJetStreamNatsService
                     RetryCount = retryCount
                 };
             }
-            catch (NatsJSApiException ex) when (IsTransientError(ex) && retryCount < retryPolicy.MaxRetries)
+            catch (NATSJetStreamException ex) when (IsTransientError(ex) && retryCount < retryPolicy.MaxRetries)
             {
                 retryCount++;
-                
-                var jitter = retryPolicy.AddJitter 
+
+                var jitter = retryPolicy.AddJitter
                     ? TimeSpan.FromMilliseconds(_jitterRandom.Next(0, (int)delay.TotalMilliseconds / 4))
                     : TimeSpan.Zero;
-                
+
                 var actualDelay = delay + jitter;
-                
+
                 _logger.LogWarning(ex, "Transient error publishing to {Subject}, retrying in {Delay}ms (attempt {Attempt}/{MaxAttempts})",
                     subject, actualDelay.TotalMilliseconds, retryCount, retryPolicy.MaxRetries);
 
                 await Task.Delay(actualDelay, cancellationToken);
-                
+
                 delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * retryPolicy.BackoffMultiplier, maxDelay.TotalMilliseconds));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to publish message to {Subject} after {RetryCount} retries", subject, retryCount);
-                
+
                 return new JetStreamPublishResult
                 {
                     Success = false,
@@ -357,34 +392,42 @@ public class JetStreamNatsService : IJetStreamNatsService
         }
     }
 
-    private static bool IsTransientError(NatsJSApiException ex)
+    private static bool IsTransientError(NATSJetStreamException ex)
     {
         // 503 = No responders, 504 = Timeout
-        return ex.Error.Code is 503 or 504;
+        return ex.ErrorCode is 503 or 504;
     }
 
     #endregion
 
     #region Consumer Management
 
-    public async Task<ConsumerInfo> CreateConsumerAsync(ConsumerConfiguration config, CancellationToken cancellationToken = default)
+    public Task<ConsumerInfo> CreateConsumerAsync(GatewayConsumerConfig config, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(CreateConsumerSync(config));
+    }
+
+    private ConsumerInfo CreateConsumerSync(GatewayConsumerConfig config)
     {
         EnsureJetStreamAvailable();
 
-        var stream = await GetOrCacheStreamAsync(config.StreamName, cancellationToken);
         var natsConsumerConfig = BuildConsumerConfig(config);
-
-        var consumer = await stream.CreateOrUpdateConsumerAsync(natsConsumerConfig, cancellationToken);
+        var consumer = _jetStreamManagement!.AddOrUpdateConsumer(config.StreamName, natsConsumerConfig);
         var consumerKey = $"{config.StreamName}:{config.DurableName}";
         _consumers[consumerKey] = consumer;
 
         _logger.LogInformation("Consumer {ConsumerName} created on stream {StreamName}",
             config.DurableName, config.StreamName);
 
-        return MapConsumerInfo(consumer.Info);
+        return MapConsumerInfo(consumer);
     }
 
-    public async Task<ConsumerInfo> GetOrCreateConsumerAsync(ConsumerConfiguration config, CancellationToken cancellationToken = default)
+    public Task<ConsumerInfo> GetOrCreateConsumerAsync(GatewayConsumerConfig config, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(GetOrCreateConsumerSync(config));
+    }
+
+    private ConsumerInfo GetOrCreateConsumerSync(GatewayConsumerConfig config)
     {
         EnsureJetStreamAvailable();
 
@@ -393,138 +436,123 @@ public class JetStreamNatsService : IJetStreamNatsService
         // Check cache first
         if (_consumers.TryGetValue(consumerKey, out var cachedConsumer))
         {
-            return MapConsumerInfo(cachedConsumer.Info);
+            return MapConsumerInfo(cachedConsumer);
         }
-
-        var stream = await GetOrCacheStreamAsync(config.StreamName, cancellationToken);
 
         try
         {
             // Try to get existing consumer
-            var existingConsumer = await stream.GetConsumerAsync(config.DurableName, cancellationToken);
+            var existingConsumer = _jetStreamManagement!.GetConsumerInfo(config.StreamName, config.DurableName);
             _consumers[consumerKey] = existingConsumer;
-            
+
             _logger.LogDebug("Using existing consumer {ConsumerName} on stream {StreamName}",
                 config.DurableName, config.StreamName);
-            
-            return MapConsumerInfo(existingConsumer.Info);
+
+            return MapConsumerInfo(existingConsumer);
         }
-        catch (NatsJSApiException ex) when (ex.Error.Code == 404)
+        catch (NATSJetStreamException ex) when (ex.ErrorCode == 10014) // Consumer not found
         {
             // Consumer doesn't exist, create it
-            return await CreateConsumerAsync(config, cancellationToken);
+            return CreateConsumerSync(config);
         }
     }
 
-    public async Task<ConsumerInfo?> GetConsumerInfoAsync(string streamName, string consumerName, CancellationToken cancellationToken = default)
+    public Task<ConsumerInfo?> GetConsumerInfoAsync(string streamName, string consumerName, CancellationToken cancellationToken = default)
     {
         EnsureJetStreamAvailable();
 
         try
         {
-            var stream = await _jetStream!.GetStreamAsync(streamName, cancellationToken: cancellationToken);
-            var consumer = await stream.GetConsumerAsync(consumerName, cancellationToken);
-            return MapConsumerInfo(consumer.Info);
+            var consumer = _jetStreamManagement!.GetConsumerInfo(streamName, consumerName);
+            return Task.FromResult<ConsumerInfo?>(MapConsumerInfo(consumer));
         }
-        catch (NatsJSApiException ex) when (ex.Error.Code == 404)
+        catch (NATSJetStreamException ex) when (ex.ErrorCode == 10014)
         {
-            return null;
+            return Task.FromResult<ConsumerInfo?>(null);
         }
     }
 
-    public async Task<bool> DeleteConsumerAsync(string streamName, string consumerName, CancellationToken cancellationToken = default)
+    public Task<bool> DeleteConsumerAsync(string streamName, string consumerName, CancellationToken cancellationToken = default)
     {
         EnsureJetStreamAvailable();
 
         try
         {
-            var stream = await _jetStream!.GetStreamAsync(streamName, cancellationToken: cancellationToken);
-            await stream.DeleteConsumerAsync(consumerName, cancellationToken);
-            
+            _jetStreamManagement!.DeleteConsumer(streamName, consumerName);
+
             var consumerKey = $"{streamName}:{consumerName}";
             _consumers.TryRemove(consumerKey, out _);
-            
+
             _logger.LogInformation("Consumer {ConsumerName} deleted from stream {StreamName}", consumerName, streamName);
-            return true;
+            return Task.FromResult(true);
         }
-        catch (NatsJSApiException ex) when (ex.Error.Code == 404)
+        catch (NATSJetStreamException ex) when (ex.ErrorCode == 10014)
         {
             _logger.LogWarning("Consumer {ConsumerName} not found on stream {StreamName}", consumerName, streamName);
-            return false;
+            return Task.FromResult(false);
         }
     }
 
-    private async Task<INatsJSStream> GetOrCacheStreamAsync(string streamName, CancellationToken cancellationToken)
+    private NatsConsumerConfig BuildConsumerConfig(GatewayConsumerConfig config)
     {
-        if (_streams.TryGetValue(streamName, out var cachedStream))
+        var builder = NatsConsumerConfig.Builder()
+            .WithDurable(config.DurableName)
+            .WithDescription(config.Description)
+            .WithAckPolicy(config.AckPolicy switch
+            {
+                Configuration.AckPolicy.None => NatsAckPolicy.None,
+                Configuration.AckPolicy.All => NatsAckPolicy.All,
+                _ => NatsAckPolicy.Explicit
+            })
+            .WithAckWait(Duration.OfMillis((long)DurationParser.Parse(config.AckWait).TotalMilliseconds))
+            .WithMaxDeliver(config.MaxDeliver)
+            .WithMaxAckPending(config.MaxAckPending)
+            .WithDeliverPolicy(config.DeliveryPolicy switch
+            {
+                Configuration.DeliveryPolicy.Last => NatsDeliverPolicy.Last,
+                Configuration.DeliveryPolicy.New => NatsDeliverPolicy.New,
+                Configuration.DeliveryPolicy.ByStartSequence => NatsDeliverPolicy.ByStartSequence,
+                Configuration.DeliveryPolicy.ByStartTime => NatsDeliverPolicy.ByStartTime,
+                Configuration.DeliveryPolicy.LastPerSubject => NatsDeliverPolicy.LastPerSubject,
+                _ => NatsDeliverPolicy.All
+            })
+            .WithReplayPolicy(config.ReplayPolicy switch
+            {
+                Configuration.ReplayPolicy.Original => NatsReplayPolicy.Original,
+                _ => NatsReplayPolicy.Instant
+            });
+
+        if (!string.IsNullOrEmpty(config.FilterSubject))
         {
-            return cachedStream;
+            builder.WithFilterSubject(config.FilterSubject);
         }
-
-        var stream = await _jetStream!.GetStreamAsync(streamName, cancellationToken: cancellationToken);
-        _streams[streamName] = stream;
-        return stream;
-    }
-
-    private ConsumerConfig BuildConsumerConfig(ConsumerConfiguration config)
-    {
-        var consumerConfig = new ConsumerConfig(config.DurableName)
-        {
-            Description = config.Description,
-            FilterSubject = string.IsNullOrEmpty(config.FilterSubject) ? null : config.FilterSubject,
-            AckPolicy = config.AckPolicy switch
-            {
-                Configuration.AckPolicy.None => ConsumerConfigAckPolicy.None,
-                Configuration.AckPolicy.All => ConsumerConfigAckPolicy.All,
-                _ => ConsumerConfigAckPolicy.Explicit
-            },
-            AckWait = DurationParser.Parse(config.AckWait),
-            MaxDeliver = config.MaxDeliver,
-            MaxAckPending = config.MaxAckPending,
-            DeliverPolicy = config.DeliveryPolicy switch
-            {
-                Configuration.DeliveryPolicy.Last => ConsumerConfigDeliverPolicy.Last,
-                Configuration.DeliveryPolicy.New => ConsumerConfigDeliverPolicy.New,
-                Configuration.DeliveryPolicy.ByStartSequence => ConsumerConfigDeliverPolicy.ByStartSequence,
-                Configuration.DeliveryPolicy.ByStartTime => ConsumerConfigDeliverPolicy.ByStartTime,
-                Configuration.DeliveryPolicy.LastPerSubject => ConsumerConfigDeliverPolicy.LastPerSubject,
-                _ => ConsumerConfigDeliverPolicy.All
-            },
-            ReplayPolicy = config.ReplayPolicy switch
-            {
-                Configuration.ReplayPolicy.Original => ConsumerConfigReplayPolicy.Original,
-                _ => ConsumerConfigReplayPolicy.Instant
-            }
-        };
 
         // Push consumer settings
         if (config.Type == ConsumerType.Push && !string.IsNullOrEmpty(config.DeliverSubject))
         {
-            consumerConfig.DeliverSubject = config.DeliverSubject;
-            consumerConfig.DeliverGroup = string.IsNullOrEmpty(config.DeliverGroup) ? null : config.DeliverGroup;
-            consumerConfig.FlowControl = config.FlowControl;
-            
-            if (!string.IsNullOrEmpty(config.IdleHeartbeat))
+            builder.WithDeliverSubject(config.DeliverSubject);
+            if (!string.IsNullOrEmpty(config.DeliverGroup))
             {
-                consumerConfig.IdleHeartbeat = DurationParser.Parse(config.IdleHeartbeat);
+                builder.WithDeliverGroup(config.DeliverGroup);
             }
+            builder.WithFlowControl(Duration.OfMillis((long)DurationParser.Parse(config.IdleHeartbeat).TotalMilliseconds));
         }
 
-        return consumerConfig;
+        return builder.Build();
     }
 
-    private static ConsumerInfo MapConsumerInfo(NATS.Client.JetStream.Models.ConsumerInfo info)
+    private static ConsumerInfo MapConsumerInfo(NatsConsumerInfo info)
     {
         return new ConsumerInfo
         {
             Name = info.Name,
-            StreamName = info.StreamName,
+            StreamName = info.Stream,
             NumPending = (long)info.NumPending,
             NumAckPending = info.NumAckPending,
             NumRedelivered = (long)info.NumRedelivered,
             Delivered = info.Delivered.StreamSeq,
-            IsDurable = !string.IsNullOrEmpty(info.Config.DurableName),
-            Created = info.Created.UtcDateTime
+            IsDurable = !string.IsNullOrEmpty(info.ConsumerConfiguration.Durable),
+            Created = info.Created
         };
     }
 
@@ -532,7 +560,7 @@ public class JetStreamNatsService : IJetStreamNatsService
 
     #region Message Consumption
 
-    public async Task<IReadOnlyList<JetStreamMessage>> FetchMessagesAsync(
+    public Task<IReadOnlyList<JetStreamMessage>> FetchMessagesAsync(
         string streamName,
         string consumerName,
         int batchSize = 100,
@@ -540,29 +568,36 @@ public class JetStreamNatsService : IJetStreamNatsService
         CancellationToken cancellationToken = default)
     {
         EnsureJetStreamAvailable();
+        return Task.FromResult(FetchMessagesSync(streamName, consumerName, batchSize, timeout));
+    }
 
-        var consumerKey = $"{streamName}:{consumerName}";
-        
-        if (!_consumers.TryGetValue(consumerKey, out var consumer))
-        {
-            var stream = await GetOrCacheStreamAsync(streamName, cancellationToken);
-            consumer = await stream.GetConsumerAsync(consumerName, cancellationToken);
-            _consumers[consumerKey] = consumer;
-        }
+    private IReadOnlyList<JetStreamMessage> FetchMessagesSync(
+        string streamName,
+        string consumerName,
+        int batchSize,
+        TimeSpan? timeout)
+    {
 
         var fetchTimeout = timeout ?? DurationParser.Parse(_jetStreamOptions.DefaultConsumerOptions.FetchTimeout);
         var messages = new List<JetStreamMessage>();
 
         try
         {
-            await foreach (var msg in consumer.FetchAsync<byte[]>(
-                new NatsJSFetchOpts { MaxMsgs = batchSize, Expires = fetchTimeout },
-                cancellationToken: cancellationToken))
+            var pullOpts = PullSubscribeOptions.Builder()
+                .WithDurable(consumerName)
+                .WithStream(streamName)
+                .Build();
+
+            using var subscription = _jetStream!.PullSubscribe(null, pullOpts);
+
+            var fetched = subscription.Fetch(batchSize, (int)fetchTimeout.TotalMilliseconds);
+
+            foreach (var msg in fetched)
             {
                 messages.Add(MapNatsMessage(msg, streamName, consumerName));
             }
         }
-        catch (NatsJSTimeoutException)
+        catch (NATSTimeoutException)
         {
             // Timeout is expected when no messages are available
             _logger.LogDebug("Fetch timeout for consumer {ConsumerName}, received {MessageCount} messages",
@@ -578,7 +613,7 @@ public class JetStreamNatsService : IJetStreamNatsService
         return messages;
     }
 
-    public async Task<JetStreamSubscription> SubscribeAsync(
+    public Task<JetStreamSubscription> SubscribeAsync(
         string streamName,
         string consumerName,
         Func<JetStreamMessage, Task> handler,
@@ -589,13 +624,23 @@ public class JetStreamNatsService : IJetStreamNatsService
         var subscriptionId = Guid.NewGuid().ToString();
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        var consumerKey = $"{streamName}:{consumerName}";
-        
-        if (!_consumers.TryGetValue(consumerKey, out var consumer))
+        var pullOpts = PullSubscribeOptions.Builder()
+            .WithDurable(consumerName)
+            .WithStream(streamName)
+            .Build();
+
+        var natsSubscription = _jetStream!.PullSubscribe(null, pullOpts);
+
+        // Get filter subject from consumer config if available
+        string filterSubject = "*";
+        try
         {
-            var stream = await GetOrCacheStreamAsync(streamName, cancellationToken);
-            consumer = await stream.GetConsumerAsync(consumerName, cancellationToken);
-            _consumers[consumerKey] = consumer;
+            var consumerInfo = _jetStreamManagement!.GetConsumerInfo(streamName, consumerName);
+            filterSubject = consumerInfo.ConsumerConfiguration.FilterSubject ?? "*";
+        }
+        catch
+        {
+            // Ignore - use default
         }
 
         var subscription = new JetStreamSubscription
@@ -603,7 +648,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             SubscriptionId = subscriptionId,
             ConsumerName = consumerName,
             StreamName = streamName,
-            Subject = consumer.Info.Config.FilterSubject ?? "*",
+            Subject = filterSubject,
             IsActive = true
         };
 
@@ -611,18 +656,19 @@ public class JetStreamNatsService : IJetStreamNatsService
         {
             Subscription = subscription,
             CancellationTokenSource = cts,
-            Handler = handler
+            Handler = handler,
+            NatsSubscription = natsSubscription
         };
 
         _subscriptions[subscriptionId] = state;
 
         // Start consuming in background
-        _ = Task.Run(async () => await ConsumeMessagesAsync(state, consumer, streamName, consumerName), cts.Token);
+        _ = Task.Run(async () => await ConsumeMessagesAsync(state, streamName, consumerName), cts.Token);
 
         _logger.LogInformation("Started subscription {SubscriptionId} for consumer {ConsumerName} on stream {StreamName}",
             subscriptionId, consumerName, streamName);
 
-        return subscription;
+        return Task.FromResult(subscription);
     }
 
     public async Task<JetStreamSubscription> SubscribeWithReplayAsync(
@@ -637,9 +683,9 @@ public class JetStreamNatsService : IJetStreamNatsService
         EnsureJetStreamAvailable();
 
         // Create a unique consumer for this subscription with replay options
-        var consumerName = $"{consumerNamePrefix}-{Guid.NewGuid():N}";
+        var consumerName = $"{consumerNamePrefix}-{Guid.NewGuid():N}".Substring(0, Math.Min(48, $"{consumerNamePrefix}".Length + 33));
 
-        var consumerConfig = new ConsumerConfiguration
+        var consumerConfig = new GatewayConsumerConfig
         {
             Name = consumerName,
             StreamName = streamName,
@@ -657,7 +703,8 @@ public class JetStreamNatsService : IJetStreamNatsService
         await CreateConsumerAsync(consumerConfig, cancellationToken);
 
         var subscription = await SubscribeAsync(streamName, consumerName, handler, cancellationToken);
-        // Update device ID on the subscription
+
+        // Create updated subscription with device ID
         var updatedSubscription = new JetStreamSubscription
         {
             SubscriptionId = subscription.SubscriptionId,
@@ -668,9 +715,8 @@ public class JetStreamNatsService : IJetStreamNatsService
             LastAckedSequence = subscription.LastAckedSequence,
             DeviceId = deviceId
         };
-        subscription = updatedSubscription;
 
-        return subscription;
+        return updatedSubscription;
     }
 
     private static Configuration.DeliveryPolicy MapReplayModeToDeliveryPolicy(ReplayMode mode)
@@ -681,19 +727,18 @@ public class JetStreamNatsService : IJetStreamNatsService
             ReplayMode.Last => Configuration.DeliveryPolicy.Last,
             ReplayMode.FromSequence => Configuration.DeliveryPolicy.ByStartSequence,
             ReplayMode.FromTime => Configuration.DeliveryPolicy.ByStartTime,
-            ReplayMode.ResumeFromLastAck => Configuration.DeliveryPolicy.All, // Will be filtered by consumer state
+            ReplayMode.ResumeFromLastAck => Configuration.DeliveryPolicy.All,
             _ => Configuration.DeliveryPolicy.New
         };
     }
 
     private async Task ConsumeMessagesAsync(
         SubscriptionState state,
-        INatsJSConsumer consumer,
         string streamName,
         string consumerName)
     {
         var batchSize = _jetStreamOptions.DefaultConsumerOptions.DefaultBatchSize;
-        var fetchTimeout = DurationParser.Parse(_jetStreamOptions.DefaultConsumerOptions.FetchTimeout);
+        var fetchTimeout = (int)DurationParser.Parse(_jetStreamOptions.DefaultConsumerOptions.FetchTimeout).TotalMilliseconds;
 
         try
         {
@@ -701,10 +746,13 @@ public class JetStreamNatsService : IJetStreamNatsService
             {
                 try
                 {
-                    await foreach (var msg in consumer.FetchAsync<byte[]>(
-                        new NatsJSFetchOpts { MaxMsgs = batchSize, Expires = fetchTimeout },
-                        cancellationToken: state.CancellationTokenSource.Token))
+                    var messages = state.NatsSubscription!.Fetch(batchSize, fetchTimeout);
+
+                    foreach (var msg in messages)
                     {
+                        if (state.CancellationTokenSource.IsCancellationRequested)
+                            break;
+
                         var jsMessage = MapNatsMessage(msg, streamName, consumerName);
 
                         if (jsMessage.IsRedelivered)
@@ -716,17 +764,17 @@ public class JetStreamNatsService : IJetStreamNatsService
                         try
                         {
                             await state.Handler(jsMessage);
-                            await msg.AckAsync(cancellationToken: state.CancellationTokenSource.Token);
+                            msg.Ack();
                             state.Subscription.LastAckedSequence = jsMessage.Sequence;
                         }
                         catch (Exception ex)
                         {
                             _logger.LogError(ex, "Error processing message from {Subject}, will be redelivered", jsMessage.Subject);
-                            await msg.NakAsync(cancellationToken: state.CancellationTokenSource.Token);
+                            msg.Nak();
                         }
                     }
                 }
-                catch (NatsJSTimeoutException)
+                catch (NATSTimeoutException)
                 {
                     // Expected when no messages are available
                 }
@@ -743,11 +791,13 @@ public class JetStreamNatsService : IJetStreamNatsService
         }
     }
 
-    public async Task UnsubscribeAsync(string subscriptionId, bool deleteConsumer = false, CancellationToken cancellationToken = default)
+    public Task UnsubscribeAsync(string subscriptionId, bool deleteConsumer = false, CancellationToken cancellationToken = default)
     {
         if (_subscriptions.TryRemove(subscriptionId, out var state))
         {
             state.CancellationTokenSource.Cancel();
+            state.NatsSubscription?.Unsubscribe();
+            state.NatsSubscription?.Dispose();
             state.CancellationTokenSource.Dispose();
             state.Subscription.IsActive = false;
 
@@ -755,31 +805,35 @@ public class JetStreamNatsService : IJetStreamNatsService
 
             if (deleteConsumer)
             {
-                await DeleteConsumerAsync(state.Subscription.StreamName, state.Subscription.ConsumerName, cancellationToken);
+                return DeleteConsumerAsync(state.Subscription.StreamName, state.Subscription.ConsumerName, cancellationToken);
             }
         }
+
+        return Task.CompletedTask;
     }
 
-    private JetStreamMessage MapNatsMessage(NatsJSMsg<byte[]> msg, string streamName, string consumerName)
+    private JetStreamMessage MapNatsMessage(Msg msg, string streamName, string consumerName)
     {
         var headers = new Dictionary<string, string>();
-        if (msg.Headers != null)
+        if (msg.Header != null)
         {
-            foreach (var (key, values) in msg.Headers)
+            foreach (string key in msg.Header.Keys)
             {
-                headers[key] = values.FirstOrDefault() ?? string.Empty;
+                headers[key] = string.Join(",", msg.Header.GetValues(key));
             }
         }
+
+        var meta = msg.MetaData;
 
         return new JetStreamMessage
         {
             Subject = msg.Subject,
             Data = msg.Data ?? Array.Empty<byte>(),
             Headers = headers,
-            Sequence = msg.Metadata?.Sequence.Stream ?? 0,
-            ConsumerSequence = msg.Metadata?.Sequence.Consumer ?? 0,
-            Timestamp = msg.Metadata?.Timestamp.UtcDateTime ?? DateTime.UtcNow,
-            DeliveryCount = (int)(msg.Metadata?.NumDelivered ?? 1),
+            Sequence = meta?.StreamSequence ?? 0,
+            ConsumerSequence = meta?.ConsumerSequence ?? 0,
+            Timestamp = meta?.Timestamp ?? DateTime.UtcNow,
+            DeliveryCount = (int)(meta?.NumDelivered ?? 1),
             Stream = streamName,
             Consumer = consumerName,
             AckContext = msg
@@ -790,47 +844,51 @@ public class JetStreamNatsService : IJetStreamNatsService
 
     #region Message Acknowledgement
 
-    public async Task AckMessageAsync(JetStreamMessage message, CancellationToken cancellationToken = default)
+    public Task AckMessageAsync(JetStreamMessage message, CancellationToken cancellationToken = default)
     {
-        if (message.AckContext is NatsJSMsg<byte[]> msg)
+        if (message.AckContext is Msg msg)
         {
-            await msg.AckAsync(cancellationToken: cancellationToken);
+            msg.Ack();
             _logger.LogDebug("Acknowledged message. Subject: {Subject}, Sequence: {Sequence}", message.Subject, message.Sequence);
         }
+        return Task.CompletedTask;
     }
 
-    public async Task NakMessageAsync(JetStreamMessage message, TimeSpan? delay = null, CancellationToken cancellationToken = default)
+    public Task NakMessageAsync(JetStreamMessage message, TimeSpan? delay = null, CancellationToken cancellationToken = default)
     {
-        if (message.AckContext is NatsJSMsg<byte[]> msg)
+        if (message.AckContext is Msg msg)
         {
             if (delay.HasValue)
             {
-                await msg.NakAsync(delay: delay.Value, cancellationToken: cancellationToken);
+                msg.NakWithDelay(Duration.OfMillis((long)delay.Value.TotalMilliseconds));
             }
             else
             {
-                await msg.NakAsync(cancellationToken: cancellationToken);
+                msg.Nak();
             }
             _logger.LogDebug("NAK'd message. Subject: {Subject}, Sequence: {Sequence}", message.Subject, message.Sequence);
         }
+        return Task.CompletedTask;
     }
 
-    public async Task InProgressAsync(JetStreamMessage message, CancellationToken cancellationToken = default)
+    public Task InProgressAsync(JetStreamMessage message, CancellationToken cancellationToken = default)
     {
-        if (message.AckContext is NatsJSMsg<byte[]> msg)
+        if (message.AckContext is Msg msg)
         {
-            await msg.AckProgressAsync(cancellationToken: cancellationToken);
+            msg.InProgress();
             _logger.LogDebug("Extended ack deadline. Subject: {Subject}, Sequence: {Sequence}", message.Subject, message.Sequence);
         }
+        return Task.CompletedTask;
     }
 
-    public async Task TerminateMessageAsync(JetStreamMessage message, CancellationToken cancellationToken = default)
+    public Task TerminateMessageAsync(JetStreamMessage message, CancellationToken cancellationToken = default)
     {
-        if (message.AckContext is NatsJSMsg<byte[]> msg)
+        if (message.AckContext is Msg msg)
         {
-            await msg.AckTerminateAsync(cancellationToken: cancellationToken);
+            msg.Term();
             _logger.LogDebug("Terminated message. Subject: {Subject}, Sequence: {Sequence}", message.Subject, message.Sequence);
         }
+        return Task.CompletedTask;
     }
 
     #endregion
@@ -847,7 +905,7 @@ public class JetStreamNatsService : IJetStreamNatsService
         EnsureJetStreamAvailable();
 
         // Find the stream that handles this subject
-        var streamName = await FindStreamForSubjectAsync(subject, cancellationToken);
+        var streamName = FindStreamForSubject(subject);
         if (streamName == null)
         {
             throw new InvalidOperationException($"No stream found for subject pattern: {subject}");
@@ -855,7 +913,7 @@ public class JetStreamNatsService : IJetStreamNatsService
 
         // Check if we can use a shared consumer
         var sharedConsumerKey = $"{streamName}:{subject}";
-        
+
         JetStreamSubscription subscription;
 
         if (_sharedConsumers.TryGetValue(sharedConsumerKey, out var sharedState))
@@ -872,7 +930,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             };
 
             sharedState.AddHandler(deviceId, handler);
-            
+
             _logger.LogInformation("Device {DeviceId} joined shared consumer {ConsumerName} for subject {Subject}",
                 deviceId, sharedState.ConsumerName, subject);
         }
@@ -911,7 +969,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             if (subscription != null)
             {
                 subscriptions.Remove(subscription);
-                
+
                 // Check if this was a shared consumer subscription
                 var sharedConsumerKey = $"{subscription.StreamName}:{subscription.Subject}";
                 if (_sharedConsumers.TryGetValue(sharedConsumerKey, out var sharedState))
@@ -940,7 +998,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             : Array.Empty<JetStreamSubscription>();
     }
 
-    private Task<string?> FindStreamForSubjectAsync(string subject, CancellationToken cancellationToken)
+    private string? FindStreamForSubject(string subject)
     {
         // Check configured streams first
         foreach (var streamConfig in _jetStreamOptions.Streams)
@@ -949,7 +1007,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             {
                 if (SubjectMatchesPattern(subject, pattern))
                 {
-                    return Task.FromResult<string?>(streamConfig.Name);
+                    return streamConfig.Name;
                 }
             }
         }
@@ -957,14 +1015,14 @@ public class JetStreamNatsService : IJetStreamNatsService
         // Fall back to checking cached streams
         foreach (var (name, stream) in _streams)
         {
-            var info = stream.Info;
+            var info = stream;
             if (info.Config.Subjects?.Any(pattern => SubjectMatchesPattern(subject, pattern)) == true)
             {
-                return Task.FromResult<string?>(name);
+                return name;
             }
         }
 
-        return Task.FromResult<string?>(null);
+        return null;
     }
 
     private static bool SubjectMatchesPattern(string subject, string pattern)
@@ -976,7 +1034,7 @@ public class JetStreamNatsService : IJetStreamNatsService
             var patternParts = pattern.Split('.');
             var subjectParts = subject.Split('.');
             if (patternParts.Length != subjectParts.Length) return false;
-            
+
             for (int i = 0; i < patternParts.Length; i++)
             {
                 if (patternParts[i] != "*" && patternParts[i] != subjectParts[i])
@@ -997,7 +1055,7 @@ public class JetStreamNatsService : IJetStreamNatsService
         if (info == null) return -1;
 
         var lag = info.NumPending;
-        
+
         if (lag > 0)
         {
             _logger.LogDebug("Consumer {ConsumerName} lag: {Lag} pending messages", consumerName, lag);
@@ -1006,33 +1064,50 @@ public class JetStreamNatsService : IJetStreamNatsService
         return lag;
     }
 
-    public async Task<IReadOnlyList<StreamInfo>> GetAllStreamsAsync(CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<StreamInfo>> GetAllStreamsAsync(CancellationToken cancellationToken = default)
     {
         EnsureJetStreamAvailable();
 
         var streams = new List<StreamInfo>();
-        
-        await foreach (var stream in _jetStream!.ListStreamsAsync(cancellationToken: cancellationToken))
+        var streamNames = _jetStreamManagement!.GetStreamNames();
+
+        foreach (var name in streamNames)
         {
-            streams.Add(MapStreamInfo(stream.Info));
+            try
+            {
+                var info = _jetStreamManagement.GetStreamInfo(name);
+                streams.Add(MapStreamInfo(info));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get info for stream {StreamName}", name);
+            }
         }
 
-        return streams;
+        return Task.FromResult<IReadOnlyList<StreamInfo>>(streams);
     }
 
-    public async Task<IReadOnlyList<ConsumerInfo>> GetAllConsumersAsync(string streamName, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<ConsumerInfo>> GetAllConsumersAsync(string streamName, CancellationToken cancellationToken = default)
     {
         EnsureJetStreamAvailable();
 
-        var stream = await _jetStream!.GetStreamAsync(streamName, cancellationToken: cancellationToken);
         var consumers = new List<ConsumerInfo>();
+        var consumerNames = _jetStreamManagement!.GetConsumerNames(streamName);
 
-        await foreach (var consumer in stream.ListConsumersAsync(cancellationToken: cancellationToken))
+        foreach (var name in consumerNames)
         {
-            consumers.Add(MapConsumerInfo(consumer.Info));
+            try
+            {
+                var info = _jetStreamManagement.GetConsumerInfo(streamName, name);
+                consumers.Add(MapConsumerInfo(info));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get info for consumer {ConsumerName}", name);
+            }
         }
 
-        return consumers;
+        return Task.FromResult<IReadOnlyList<ConsumerInfo>>(consumers);
     }
 
     #endregion
@@ -1041,7 +1116,7 @@ public class JetStreamNatsService : IJetStreamNatsService
 
     private void EnsureJetStreamAvailable()
     {
-        if (_jetStream == null)
+        if (_jetStream == null || _jetStreamManagement == null)
         {
             throw new InvalidOperationException("JetStream is not available. Ensure the service is initialized and JetStream is enabled.");
         }
@@ -1051,11 +1126,11 @@ public class JetStreamNatsService : IJetStreamNatsService
 
     #region Disposal
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         if (_disposed)
         {
-            return;
+            return ValueTask.CompletedTask;
         }
 
         _disposed = true;
@@ -1064,6 +1139,8 @@ public class JetStreamNatsService : IJetStreamNatsService
         foreach (var (_, state) in _subscriptions)
         {
             state.CancellationTokenSource.Cancel();
+            state.NatsSubscription?.Unsubscribe();
+            state.NatsSubscription?.Dispose();
             state.CancellationTokenSource.Dispose();
         }
         _subscriptions.Clear();
@@ -1080,14 +1157,15 @@ public class JetStreamNatsService : IJetStreamNatsService
         _consumers.Clear();
         _streams.Clear();
 
-        if (_connection != null)
-        {
-            await _connection.DisposeAsync();
-        }
+        _connection?.Drain();
+        _connection?.Close();
+        _connection?.Dispose();
 
         _initLock.Dispose();
 
         _logger.LogInformation("JetStream NATS service disposed");
+
+        return ValueTask.CompletedTask;
     }
 
     #endregion
@@ -1099,6 +1177,7 @@ public class JetStreamNatsService : IJetStreamNatsService
         public required JetStreamSubscription Subscription { get; init; }
         public required CancellationTokenSource CancellationTokenSource { get; init; }
         public required Func<JetStreamMessage, Task> Handler { get; init; }
+        public IJetStreamPullSubscription? NatsSubscription { get; init; }
     }
 
     private class SharedConsumerState

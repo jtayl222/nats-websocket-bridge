@@ -5,30 +5,36 @@ using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using NATS.Client.Core;
+using NATS.Client;
 using NATS.Client.JetStream;
-using NATS.Client.JetStream.Models;
 using NatsWebSocketBridge.Historian.Configuration;
 using NatsWebSocketBridge.Historian.Models;
 using Prometheus;
 
+// Resolve ambiguity between NATS.Client.Options and Microsoft.Extensions.Options.Options
+using NatsClientOptions = NATS.Client.Options;
+using NatsConsumerConfig = NATS.Client.JetStream.ConsumerConfiguration;
+using Duration = NATS.Client.Internals.Duration;
+using HistorianNatsOptions = NatsWebSocketBridge.Historian.Configuration.NatsOptions;
+
 namespace NatsWebSocketBridge.Historian.Services;
 
 /// <summary>
-/// Background service that consumes data from JetStream and persists to TimescaleDB
+/// Background service that consumes data from JetStream and persists to TimescaleDB (NATS.Client v1 API)
 /// </summary>
 public class HistorianService : BackgroundService
 {
     private readonly ILogger<HistorianService> _logger;
     private readonly HistorianOptions _options;
-    private readonly NatsOptions _natsOptions;
+    private readonly HistorianNatsOptions _natsOptions;
     private readonly HistorianJetStreamOptions _jsOptions;
     private readonly IHistorianRepository _repository;
     private readonly IChecksumService _checksumService;
     private readonly IAuditLogService _auditLogService;
 
-    private NatsConnection? _natsConnection;
-    private NatsJSContext? _jetStream;
+    private IConnection? _natsConnection;
+    private IJetStream? _jetStream;
+    private IJetStreamManagement? _jetStreamManagement;
 
     // Batching channels for each data type
     private readonly Channel<TelemetryRecord> _telemetryChannel;
@@ -59,7 +65,7 @@ public class HistorianService : BackgroundService
     public HistorianService(
         ILogger<HistorianService> logger,
         IOptions<HistorianOptions> options,
-        IOptions<NatsOptions> natsOptions,
+        IOptions<HistorianNatsOptions> natsOptions,
         IOptions<HistorianJetStreamOptions> jsOptions,
         IHistorianRepository repository,
         IChecksumService checksumService,
@@ -92,8 +98,8 @@ public class HistorianService : BackgroundService
 
         try
         {
-            await ConnectToNatsAsync(stoppingToken);
-            await InitializeJetStreamConsumersAsync(stoppingToken);
+            ConnectToNats();
+            InitializeJetStreamConsumers();
 
             // Start batch writers
             var writerTasks = new List<Task>
@@ -126,64 +132,70 @@ public class HistorianService : BackgroundService
         }
         finally
         {
-            await CleanupAsync();
+            Cleanup();
         }
     }
 
-    private async Task ConnectToNatsAsync(CancellationToken cancellationToken)
+    private void ConnectToNats()
     {
         _logger.LogInformation("Connecting to NATS at {Url}", _natsOptions.Url);
 
-        var opts = new NatsOpts
-        {
-            Url = _natsOptions.Url,
-            Name = _natsOptions.ClientName
-        };
+        var opts = ConnectionFactory.GetDefaultOptions();
+        opts.Url = _natsOptions.Url;
+        opts.Name = _natsOptions.ClientName;
+        opts.AllowReconnect = true;
+        opts.MaxReconnect = NatsClientOptions.ReconnectForever;
+        opts.ReconnectWait = 1000;
 
-        _natsConnection = new NatsConnection(opts);
-        await _natsConnection.ConnectAsync();
+        var factory = new ConnectionFactory();
+        _natsConnection = factory.CreateConnection(opts);
 
-        _jetStream = new NatsJSContext(_natsConnection);
+        _jetStream = _natsConnection.CreateJetStreamContext();
+        _jetStreamManagement = _natsConnection.CreateJetStreamManagementContext();
 
         _logger.LogInformation("Connected to NATS server");
     }
 
-    private async Task InitializeJetStreamConsumersAsync(CancellationToken cancellationToken)
+    private void InitializeJetStreamConsumers()
     {
         foreach (var consumerConfig in _jsOptions.Consumers.Where(c => c.Enabled))
         {
             try
             {
-                var stream = await _jetStream!.GetStreamAsync(consumerConfig.StreamName, cancellationToken: cancellationToken);
+                // Check if stream exists
+                try
+                {
+                    _jetStreamManagement!.GetStreamInfo(consumerConfig.StreamName);
+                }
+                catch (NATSJetStreamException ex) when (ex.ErrorCode == 10059)
+                {
+                    _logger.LogWarning("Stream {StreamName} not found, skipping consumer {ConsumerName}",
+                        consumerConfig.StreamName, consumerConfig.Name);
+                    continue;
+                }
 
                 // Create durable consumer if it doesn't exist
                 try
                 {
-                    await stream.GetConsumerAsync(consumerConfig.Name, cancellationToken);
+                    _jetStreamManagement!.GetConsumerInfo(consumerConfig.StreamName, consumerConfig.Name);
                     _logger.LogInformation("Using existing consumer {ConsumerName} on stream {StreamName}",
                         consumerConfig.Name, consumerConfig.StreamName);
                 }
-                catch (NatsJSApiException ex) when (ex.Error.Code == 404)
+                catch (NATSJetStreamException ex) when (ex.ErrorCode == 10014)
                 {
-                    var config = new ConsumerConfig(consumerConfig.Name)
-                    {
-                        DurableName = consumerConfig.Name,
-                        FilterSubject = consumerConfig.FilterSubject,
-                        AckPolicy = ConsumerConfigAckPolicy.Explicit,
-                        AckWait = ParseDuration(_jsOptions.AckWait),
-                        MaxDeliver = _jsOptions.MaxDeliver,
-                        DeliverPolicy = ConsumerConfigDeliverPolicy.All
-                    };
+                    var config = NatsConsumerConfig.Builder()
+                        .WithDurable(consumerConfig.Name)
+                        .WithFilterSubject(consumerConfig.FilterSubject)
+                        .WithAckPolicy(AckPolicy.Explicit)
+                        .WithAckWait(Duration.OfMillis((long)ParseDuration(_jsOptions.AckWait).TotalMilliseconds))
+                        .WithMaxDeliver(_jsOptions.MaxDeliver)
+                        .WithDeliverPolicy(DeliverPolicy.All)
+                        .Build();
 
-                    await stream.CreateOrUpdateConsumerAsync(config, cancellationToken);
+                    _jetStreamManagement!.AddOrUpdateConsumer(consumerConfig.StreamName, config);
                     _logger.LogInformation("Created consumer {ConsumerName} on stream {StreamName}",
                         consumerConfig.Name, consumerConfig.StreamName);
                 }
-            }
-            catch (NatsJSApiException ex) when (ex.Error.Code == 404)
-            {
-                _logger.LogWarning("Stream {StreamName} not found, skipping consumer {ConsumerName}",
-                    consumerConfig.StreamName, consumerConfig.Name);
             }
             catch (Exception ex)
             {
@@ -197,23 +209,42 @@ public class HistorianService : BackgroundService
         _logger.LogInformation("Starting consumer {ConsumerName} for {DataType}",
             config.Name, config.DataType);
 
+        IJetStreamPullSubscription? subscription = null;
+
+        try
+        {
+            var pullOpts = PullSubscribeOptions.Builder()
+                .WithDurable(config.Name)
+                .WithStream(config.StreamName)
+                .Build();
+
+            subscription = _jetStream!.PullSubscribe(config.FilterSubject, pullOpts);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create subscription for consumer {ConsumerName}", config.Name);
+            return;
+        }
+
+        var fetchTimeout = (int)ParseDuration(_jsOptions.FetchTimeout).TotalMilliseconds;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                var stream = await _jetStream!.GetStreamAsync(config.StreamName, cancellationToken: cancellationToken);
-                var consumer = await stream.GetConsumerAsync(config.Name, cancellationToken);
+                var messages = subscription.Fetch(_jsOptions.DefaultBatchSize, fetchTimeout);
 
-                await foreach (var msg in consumer.FetchAsync<byte[]>(
-                    new NatsJSFetchOpts { MaxMsgs = _jsOptions.DefaultBatchSize, Expires = ParseDuration(_jsOptions.FetchTimeout) },
-                    cancellationToken: cancellationToken))
+                foreach (var msg in messages)
                 {
+                    if (cancellationToken.IsCancellationRequested)
+                        break;
+
                     using var timer = ProcessingLatency.WithLabels(config.DataType.ToString()).NewTimer();
 
                     try
                     {
                         await ProcessMessageAsync(msg, config.DataType, cancellationToken);
-                        await msg.AckAsync(cancellationToken: cancellationToken);
+                        msg.Ack();
                         MessagesProcessed.WithLabels(config.DataType.ToString(), "success").Inc();
                     }
                     catch (Exception ex)
@@ -222,15 +253,15 @@ public class HistorianService : BackgroundService
                         MessagesProcessed.WithLabels(config.DataType.ToString(), "error").Inc();
 
                         // NAK with delay for retry
-                        await msg.NakAsync(delay: TimeSpan.FromSeconds(5), cancellationToken: cancellationToken);
+                        msg.NakWithDelay(Duration.OfSeconds(5));
                     }
                 }
             }
-            catch (NatsJSTimeoutException)
+            catch (NATSTimeoutException)
             {
                 // Expected when no messages are available
             }
-            catch (NatsJSApiException ex) when (ex.Error.Code == 404)
+            catch (NATSJetStreamException ex) when (ex.ErrorCode == 10059 || ex.ErrorCode == 10014)
             {
                 _logger.LogWarning("Stream or consumer not found: {StreamName}/{ConsumerName}. Waiting...",
                     config.StreamName, config.Name);
@@ -246,12 +277,15 @@ public class HistorianService : BackgroundService
                 await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
             }
         }
+
+        subscription?.Unsubscribe();
+        subscription?.Dispose();
     }
 
-    private async Task ProcessMessageAsync(NatsJSMsg<byte[]> msg, HistorianDataType dataType, CancellationToken cancellationToken)
+    private async Task ProcessMessageAsync(Msg msg, HistorianDataType dataType, CancellationToken cancellationToken)
     {
         var data = msg.Data ?? Array.Empty<byte>();
-        var timestamp = msg.Metadata?.Timestamp.UtcDateTime ?? DateTime.UtcNow;
+        var timestamp = msg.MetaData?.Timestamp ?? DateTime.UtcNow;
 
         switch (dataType)
         {
@@ -684,16 +718,15 @@ public class HistorianService : BackgroundService
         return TimeSpan.FromTicks(totalTicks);
     }
 
-    private async Task CleanupAsync()
+    private void Cleanup()
     {
         _telemetryChannel.Writer.Complete();
         _eventChannel.Writer.Complete();
         _qualityChannel.Writer.Complete();
 
-        if (_natsConnection != null)
-        {
-            await _natsConnection.DisposeAsync();
-        }
+        _natsConnection?.Drain();
+        _natsConnection?.Close();
+        _natsConnection?.Dispose();
 
         _logger.LogInformation("Historian service stopped");
     }
