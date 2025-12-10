@@ -56,9 +56,12 @@ public class DeviceWebSocketHandler
     }
 
     /// <summary>
-    /// Handle a WebSocket connection from a device
+    /// Handle a WebSocket connection from a device.
     /// </summary>
-    public async Task HandleConnectionAsync(WebSocket webSocket, CancellationToken cancellationToken)
+    /// <param name="webSocket">The WebSocket connection</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <param name="preAuthContext">Optional pre-authenticated context from header-based auth</param>
+    public async Task HandleConnectionAsync(WebSocket webSocket, CancellationToken cancellationToken, DeviceContext? preAuthContext = null)
     {
         string? clientId = null;
         string role = "unknown";
@@ -70,8 +73,35 @@ public class DeviceWebSocketHandler
 
         try
         {
-            // Wait for authentication (JWT token)
-            var context = await AuthenticateConnectionAsync(webSocket, cancellationToken);
+            DeviceContext? context;
+
+            if (preAuthContext != null)
+            {
+                // Already authenticated via header - send success response
+                context = preAuthContext;
+                var authResponse = new AuthResponse
+                {
+                    Success = true,
+                    ClientId = context.ClientId,
+                    Role = context.Role
+                };
+                var responseMessage = new GatewayMessage
+                {
+                    Type = MessageType.Auth,
+                    Payload = JsonSerializer.SerializeToElement(authResponse, _jsonOptions)
+                };
+                var responseJson = JsonSerializer.Serialize(responseMessage, _jsonOptions);
+                var responseBytes = Encoding.UTF8.GetBytes(responseJson);
+                await webSocket.SendAsync(responseBytes, WebSocketMessageType.Text, true, cancellationToken);
+                _metrics.RecordMessageSize("sent", responseBytes.Length);
+                _metrics.AuthAttempt("success_header");
+            }
+            else
+            {
+                // Wait for in-band authentication (JWT token in AUTH message)
+                context = await AuthenticateConnectionAsync(webSocket, cancellationToken);
+            }
+
             if (context == null)
             {
                 disconnectReason = "auth_failed";

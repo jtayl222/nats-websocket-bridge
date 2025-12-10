@@ -23,10 +23,33 @@ echo "Token: $TOKEN"
 
 ---
 
-## Demo 1: Authentication Flow
+## Demo 1a: Header-Based Authentication (Recommended for CLI tools)
 
 ```bash
-# Terminal 5: Connect with wscat
+# Terminal 5: Connect with wscat using Authorization header
+# This authenticates during the WebSocket handshake - no AUTH message needed!
+wscat -c ws://localhost:5000/ws -H "Authorization: Bearer $TOKEN"
+
+# Connection is immediately authenticated
+# You'll receive an auth success message automatically:
+# {"type":8,"payload":{"success":true,"clientId":"SENSOR-001","role":"sensor"}}
+
+# You can now publish/subscribe immediately without sending an AUTH message
+{"type":0,"subject":"telemetry.SENSOR-001.temperature","payload":{"value":23.5}}
+```
+
+**Talking Points:**
+- Header-based auth is simpler for CLI tools like wscat, curl, etc.
+- Authentication happens during WebSocket handshake
+- If header auth fails, connection is rejected with 401 before WebSocket is established
+- Auth success message is sent automatically after connection
+
+---
+
+## Demo 1b: In-Band Authentication (Required for browsers)
+
+```bash
+# Terminal 5: Connect with wscat (no header)
 wscat -c ws://localhost:5000/ws
 
 # Connection established - now authenticate with JWT
@@ -45,10 +68,10 @@ wscat -c ws://localhost:5000/ws
 ```
 
 **Talking Points:**
-- Connection is established but not authenticated yet
+- Browser WebSocket API doesn't support custom headers during handshake
+- In-band auth works for all client types (browsers, SDKs, CLI tools)
 - Device must send AUTH with valid JWT within timeout (default 30s)
 - JWT contains device ID, role, and permissions
-- Response confirms successful authentication
 
 ---
 

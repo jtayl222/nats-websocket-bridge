@@ -17,6 +17,37 @@ public sealed record DeviceContext
 }
 ```
 
+## Authentication Methods
+
+The gateway supports two ways to authenticate with a JWT token:
+
+### Header-Based Authentication (Recommended for CLI tools)
+
+Pass the JWT in the `Authorization` header during WebSocket handshake:
+
+```bash
+wscat -c ws://localhost:5000/ws -H "Authorization: Bearer <JWT>"
+```
+
+- Authentication happens during handshake (before WebSocket is established)
+- If invalid, connection is rejected with HTTP 401
+- If valid, auth success message is sent immediately after connection
+- No need to send an AUTH message
+
+### In-Band Authentication (Required for browsers)
+
+Send an AUTH message after connection is established:
+
+```bash
+wscat -c ws://localhost:5000/ws
+# Then send:
+{"type":8,"payload":{"token":"<JWT>"}}
+```
+
+- Required for browsers (WebSocket API doesn't support custom headers)
+- Must send AUTH within timeout (default 30 seconds)
+- Works for all client types
+
 ## How It's Used
 
 ### 1. Authentication (`JwtDeviceAuthService.cs`)

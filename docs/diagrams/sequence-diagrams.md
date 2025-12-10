@@ -2,12 +2,45 @@
 
 ## 1. Connection & Authentication
 
-### 1.1 Successful Connection Flow
+The gateway supports two authentication methods:
+1. **Header-based**: JWT passed in `Authorization` header during WebSocket handshake (recommended for CLI tools)
+2. **In-band**: JWT sent in AUTH message after connection (required for browsers)
+
+### 1.1a Header-Based Authentication (CLI tools)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Device as Device<br/>(C++ SDK)
+    participant Device as Device<br/>(CLI/SDK)
+    participant WS as WebSocket<br/>Middleware
+    participant Auth as JWT Auth<br/>Service
+    participant Handler as Device<br/>WebSocket Handler
+    participant ConnMgr as Connection<br/>Manager
+
+    Device->>+WS: WebSocket CONNECT /ws<br/>Authorization: Bearer <JWT>
+
+    WS->>+Auth: ValidateToken(jwt)
+    Auth->>Auth: Verify JWT signature
+    Auth->>Auth: Extract claims (clientId, role, pub, subscribe)
+    Auth-->>-WS: DeviceContext {ClientId, Role, AllowedPublish, AllowedSubscribe}
+
+    WS->>WS: Accept WebSocket
+    WS->>+Handler: HandleConnectionAsync(preAuthContext)
+
+    Handler->>+ConnMgr: RegisterDevice(context, websocket)
+    ConnMgr-->>-Handler: OK
+
+    Handler-->>Device: {"type": 8, "payload": {"success": true, "clientId": "sensor-001", "role": "sensor"}}
+
+    Note over Device,ConnMgr: Device is immediately authenticated and can publish/subscribe
+```
+
+### 1.1b In-Band Authentication (Browsers)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Device as Device<br/>(Browser)
     participant WS as WebSocket<br/>Middleware
     participant Handler as Device<br/>WebSocket Handler
     participant Auth as JWT Auth<br/>Service

@@ -101,10 +101,13 @@ TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
   -d '{"clientId":"demo-device","role":"sensor","publish":["telemetry.>","factory.>"],"subscribe":["commands.demo-device.>"]}' \
   | jq -r '.token')
 
-# Connect and authenticate
-wscat -c ws://localhost:5000/ws
+# Option 1: Header-based auth (recommended for CLI tools)
+# Token is passed in Authorization header - no AUTH message needed
+wscat -c ws://localhost:5000/ws -H "Authorization: Bearer $TOKEN"
 
-# Send auth message with JWT (type 8 = Auth)
+# Option 2: In-band auth (required for browsers)
+wscat -c ws://localhost:5000/ws
+# Then send auth message with JWT (type 8 = Auth)
 {"type":8,"payload":{"token":"<paste TOKEN here>"}}
 
 # Publish telemetry (type 0 = Publish)
@@ -116,6 +119,13 @@ wscat -c ws://localhost:5000/ws
 # Keep-alive ping (type 9 = Ping)
 {"type":9}
 ```
+
+**Authentication Methods:**
+
+| Method | Use Case | How |
+|--------|----------|-----|
+| Header-based | CLI tools (wscat, curl) | `-H "Authorization: Bearer $TOKEN"` |
+| In-band | Browsers, SDKs | Send `{"type":8,"payload":{"token":"..."}}` after connect |
 
 **JWT Token Generation (Development only):**
 ```bash
