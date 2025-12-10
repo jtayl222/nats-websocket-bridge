@@ -290,12 +290,12 @@ wscat -c ws://localhost:5000/ws
 < {"type":10,"timestamp":"..."}
 ```
 
-### Stage 3: Add Authentication
+### Stage 3: Add JWT Authentication
 
-Implement authentication before allowing other message types:
+Implement JWT-based authentication before allowing other message types:
 
 ```csharp
-public async Task<DeviceInfo?> AuthenticateAsync(WebSocket socket, CancellationToken ct)
+public async Task<DeviceContext?> AuthenticateAsync(WebSocket socket, CancellationToken ct)
 {
     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
     cts.CancelAfter(TimeSpan.FromSeconds(30)); // Auth timeout
@@ -311,20 +311,21 @@ public async Task<DeviceInfo?> AuthenticateAsync(WebSocket socket, CancellationT
         return null;
     }
 
-    var authRequest = ParseAuthPayload(message.Payload);
-    var authResult = await _authService.AuthenticateAsync(authRequest, ct);
+    // Extract JWT token from payload
+    var token = message.Payload?.GetProperty("token").GetString();
+    var authResult = _jwtAuthService.ValidateToken(token);
 
     await SendAuthResponseAsync(socket, authResult, ct);
 
-    return authResult.Success ? authResult.Device : null;
+    return authResult.IsSuccess ? authResult.Context : null;
 }
 ```
 
 **Test with:**
 ```bash
 wscat -c ws://localhost:5000/ws
-> {"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
-< {"type":8,"payload":{"success":true,"device":{...}}}
+> {"type":8,"payload":{"token":"eyJhbGciOiJIUzI1NiIs..."}}
+< {"type":8,"payload":{"success":true,"clientId":"demo-device","role":"sensor"}}
 ```
 
 ### Stage 4: Add NATS Integration
@@ -333,20 +334,19 @@ Connect authenticated messages to NATS:
 
 ```csharp
 private async Task HandlePublishAsync(
-    string deviceId,
-    DeviceInfo device,
+    DeviceContext context,
     GatewayMessage message,
     CancellationToken ct)
 {
-    // Authorization check
-    if (!_authzService.CanPublish(device, message.Subject))
+    // Authorization check using JWT permissions
+    if (!_jwtAuthService.CanPublish(context, message.Subject))
     {
         await SendErrorAsync("Not authorized to publish");
         return;
     }
 
     // Add metadata
-    message.DeviceId = deviceId;
+    message.DeviceId = context.ClientId;
     message.Timestamp = DateTime.UtcNow;
 
     // Publish to NATS JetStream
@@ -368,20 +368,19 @@ Implement bidirectional message flow:
 
 ```csharp
 private async Task HandleSubscribeAsync(
-    string deviceId,
-    DeviceInfo device,
+    DeviceContext context,
     GatewayMessage message,
     ConcurrentDictionary<string, string> subscriptions,
     CancellationToken ct)
 {
-    if (!_authzService.CanSubscribe(device, message.Subject))
+    if (!_jwtAuthService.CanSubscribe(context, message.Subject))
     {
         await SendErrorAsync("Not authorized to subscribe");
         return;
     }
 
     var subscription = await _jetStreamService.SubscribeDeviceAsync(
-        deviceId,
+        context.ClientId,
         message.Subject,
         async (msg) =>
         {
@@ -392,7 +391,7 @@ private async Task HandleSubscribeAsync(
                 Subject = msg.Subject,
                 Payload = msg.Data
             };
-            _bufferService.Enqueue(deviceId, wsMessage);
+            _bufferService.Enqueue(context.ClientId, wsMessage);
             await _jetStreamService.AckMessageAsync(msg);
         },
         ct);

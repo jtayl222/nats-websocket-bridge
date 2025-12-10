@@ -12,67 +12,53 @@ public class DeviceConnectionManager : IDeviceConnectionManager
 {
     private readonly ILogger<DeviceConnectionManager> _logger;
     private readonly ConcurrentDictionary<string, DeviceConnection> _connections = new();
-    
+
     public int ConnectionCount => _connections.Count;
-    
+
     public DeviceConnectionManager(ILogger<DeviceConnectionManager> logger)
     {
         _logger = logger;
     }
-    
-    public void RegisterConnection(string deviceId, DeviceInfo device, WebSocket webSocket)
+
+    public void RegisterConnection(DeviceContext context, WebSocket webSocket)
     {
-        var connection = new DeviceConnection
-        {
-            DeviceInfo = device,
-            WebSocket = webSocket
-        };
-        
-        _connections.AddOrUpdate(deviceId, connection, (_, _) => connection);
-        _logger.LogInformation("Device {DeviceId} registered. Total connections: {Count}", deviceId, _connections.Count);
+        var connection = new DeviceConnection(context, webSocket);
+        _connections.AddOrUpdate(context.ClientId, connection, (_, _) => connection);
+        _logger.LogInformation(
+            "Device {ClientId} ({Role}) registered. Total connections: {Count}",
+            context.ClientId, context.Role, _connections.Count);
     }
-    
-    public void RemoveConnection(string deviceId)
+
+    public void RemoveConnection(string clientId)
     {
-        if (_connections.TryRemove(deviceId, out var connection))
+        if (_connections.TryRemove(clientId, out _))
         {
-            connection.DeviceInfo.IsConnected = false;
-            _logger.LogInformation("Device {DeviceId} removed. Total connections: {Count}", deviceId, _connections.Count);
+            _logger.LogInformation(
+                "Device {ClientId} removed. Total connections: {Count}",
+                clientId, _connections.Count);
         }
     }
-    
-    public WebSocket? GetConnection(string deviceId)
+
+    public WebSocket? GetConnection(string clientId)
     {
-        return _connections.TryGetValue(deviceId, out var connection) ? connection.WebSocket : null;
+        return _connections.TryGetValue(clientId, out var connection) ? connection.WebSocket : null;
     }
-    
-    public DeviceInfo? GetDeviceInfo(string deviceId)
+
+    public DeviceContext? GetDeviceContext(string clientId)
     {
-        return _connections.TryGetValue(deviceId, out var connection) ? connection.DeviceInfo : null;
+        return _connections.TryGetValue(clientId, out var connection) ? connection.Context : null;
     }
-    
+
     public IEnumerable<string> GetConnectedDevices()
     {
         return _connections.Keys.ToList();
     }
-    
-    public bool IsConnected(string deviceId)
+
+    public bool IsConnected(string clientId)
     {
-        return _connections.TryGetValue(deviceId, out var connection) 
+        return _connections.TryGetValue(clientId, out var connection)
             && connection.WebSocket.State == WebSocketState.Open;
     }
-    
-    public void UpdateLastActivity(string deviceId)
-    {
-        if (_connections.TryGetValue(deviceId, out var connection))
-        {
-            connection.DeviceInfo.LastActivityAt = DateTime.UtcNow;
-        }
-    }
-    
-    private class DeviceConnection
-    {
-        public DeviceInfo DeviceInfo { get; set; } = null!;
-        public WebSocket WebSocket { get; set; } = null!;
-    }
+
+    private sealed record DeviceConnection(DeviceContext Context, WebSocket WebSocket);
 }

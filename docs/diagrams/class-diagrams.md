@@ -4,30 +4,34 @@
 
 ```mermaid
 classDiagram
-    class IDeviceAuthenticationService {
+    class IJwtDeviceAuthService {
         <<interface>>
-        +AuthenticateAsync(request, token) AuthenticationResponse
-        +ValidateDeviceAsync(deviceId, token) bool
+        +ValidateToken(token) DeviceAuthResult
+        +CanPublish(context, subject) bool
+        +CanSubscribe(context, subject) bool
+        +GenerateToken(clientId, role, publish, subscribe, expiry) string
     }
 
-    class InMemoryDeviceAuthenticationService {
-        -_deviceRegistry: Dictionary
+    class JwtDeviceAuthService {
         -_logger: ILogger
-        +RegisterDevice(id, token, type, pubTopics, subTopics)
-        +AuthenticateAsync(request, token) AuthenticationResponse
+        -_options: JwtOptions
+        -_validationParameters: TokenValidationParameters
+        -_tokenHandler: JwtSecurityTokenHandler
+        +ValidateToken(token) DeviceAuthResult
+        +CanPublish(context, subject) bool
+        +CanSubscribe(context, subject) bool
+        +GenerateToken(clientId, role, publish, subscribe, expiry) string
+        -ExtractDeviceContext(principal, token) DeviceContext
+        -ParseTopicList(claim) IReadOnlyList~string~
+        -MatchesSubject(pattern, subject)$ bool
     }
 
-    class IDeviceAuthorizationService {
-        <<interface>>
-        +CanPublish(deviceId, subject) bool
-        +CanSubscribe(deviceId, subject) bool
-    }
-
-    class DeviceAuthorizationService {
-        -_connectionManager: IDeviceConnectionManager
-        +CanPublish(deviceId, subject) bool
-        +CanSubscribe(deviceId, subject) bool
-        -MatchesPattern(pattern, subject) bool
+    class DeviceAuthResult {
+        +IsSuccess: bool
+        +Context: DeviceContext?
+        +Error: string?
+        +Success(context)$ DeviceAuthResult
+        +Failure(error)$ DeviceAuthResult
     }
 
     class IMessageValidationService {
@@ -54,8 +58,8 @@ classDiagram
         +TryAcquire(deviceId) bool
     }
 
-    IDeviceAuthenticationService <|.. InMemoryDeviceAuthenticationService
-    IDeviceAuthorizationService <|.. DeviceAuthorizationService
+    IJwtDeviceAuthService <|.. JwtDeviceAuthService
+    JwtDeviceAuthService ..> DeviceAuthResult
     IMessageValidationService <|.. MessageValidationService
     IMessageThrottlingService <|.. TokenBucketThrottlingService
 ```
@@ -82,12 +86,8 @@ classDiagram
     }
 
     class DeviceConnection {
-        +DeviceId: string
+        +Context: DeviceContext
         +WebSocket: WebSocket
-        +DeviceInfo: DeviceInfo
-        +ConnectedAt: DateTime
-        +LastActivityAt: DateTime
-        +Subscriptions: List~string~
     }
 
     class IMessageBufferService {
@@ -216,30 +216,24 @@ classDiagram
         Pong = 10
     }
 
-    class AuthenticationRequest {
-        +DeviceId: string
-        +Token: string
-        +DeviceType: string
-    }
-
-    class AuthenticationResponse {
-        +Success: bool
-        +Device: DeviceInfo?
-        +Error: string?
-    }
-
-    class DeviceInfo {
-        +DeviceId: string
-        +DeviceType: string
-        +IsConnected: bool
+    class DeviceContext {
+        +ClientId: string
+        +Role: string
+        +AllowedPublish: IReadOnlyList~string~
+        +AllowedSubscribe: IReadOnlyList~string~
+        +ExpiresAt: DateTime
         +ConnectedAt: DateTime
-        +LastActivityAt: DateTime
-        +AllowedPublishTopics: List~string~
-        +AllowedSubscribeTopics: List~string~
+        +IsExpired: bool
+    }
+
+    class NatsJwtClaims {
+        <<static>>
+        +Role: string = "role"
+        +Publish: string = "pub"
+        +Subscribe: string = "subscribe"
     }
 
     GatewayMessage --> MessageType
-    AuthenticationResponse --> DeviceInfo
 ```
 
 ## 5. C++ SDK Classes
@@ -313,7 +307,7 @@ classDiagram
 
     class AuthManager {
         -state_: AuthState
-        -deviceInfo_: optional~DeviceInfo~
+        -deviceContext_: optional~DeviceContext~
         +createAuthRequest(config) Message
         +processAuthResponse(message) AuthResult
         +startAuth(config, callback)

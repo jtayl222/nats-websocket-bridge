@@ -124,9 +124,10 @@ try
         }
     }
 
-    // Add authentication and authorization services
-    builder.Services.AddSingleton<IDeviceAuthenticationService, InMemoryDeviceAuthenticationService>();
-    builder.Services.AddSingleton<IDeviceAuthorizationService, DeviceAuthorizationService>();
+    // Add JWT authentication service
+    builder.Services.Configure<JwtOptions>(
+        builder.Configuration.GetSection(JwtOptions.SectionName));
+    builder.Services.AddSingleton<IJwtDeviceAuthService, JwtDeviceAuthService>();
 
     // Add core services
     builder.Services.AddSingleton<IDeviceConnectionManager, DeviceConnectionManager>();
@@ -233,10 +234,16 @@ try
     app.MapGet("/devices", (IDeviceConnectionManager connectionManager) =>
     {
         var devices = connectionManager.GetConnectedDevices()
-            .Select(id => new
+            .Select(id =>
             {
-                deviceId = id,
-                info = connectionManager.GetDeviceInfo(id)
+                var ctx = connectionManager.GetDeviceContext(id);
+                return new
+                {
+                    clientId = id,
+                    role = ctx?.Role,
+                    connectedAt = ctx?.ConnectedAt,
+                    expiresAt = ctx?.ExpiresAt
+                };
             })
             .ToList();
 

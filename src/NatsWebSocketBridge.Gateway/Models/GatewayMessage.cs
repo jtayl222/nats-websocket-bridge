@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace NatsWebSocketBridge.Gateway.Models;
@@ -23,7 +24,7 @@ public class GatewayMessage
     /// Message payload as JSON
     /// </summary>
     [JsonPropertyName("payload")]
-    public object? Payload { get; set; }
+    public JsonElement? Payload { get; set; }
     
     /// <summary>
     /// Optional correlation ID for request/reply patterns

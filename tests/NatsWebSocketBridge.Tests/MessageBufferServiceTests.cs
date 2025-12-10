@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -125,7 +126,7 @@ public class MessageBufferServiceTests
         {
             Type = MessageType.Message,
             Subject = "devices.sensor-001.data",
-            Payload = new { temperature = 25.5 },
+            Payload = JsonSerializer.SerializeToElement(new { temperature = 25.5 }),
             Timestamp = DateTime.UtcNow
         };
     }

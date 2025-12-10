@@ -81,8 +81,7 @@ graph TB
     end
 
     subgraph "Security Layer"
-        AUTH[IDeviceAuthenticationService]
-        AUTHZ[IDeviceAuthorizationService]
+        AUTH[IJwtDeviceAuthService]
     end
 
     subgraph "Processing Layer"

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -27,7 +28,7 @@ public class MessageValidationServiceTests
         {
             Type = MessageType.Publish,
             Subject = "devices.sensor-001.data",
-            Payload = new { temperature = 25.5 }
+            Payload = JsonSerializer.SerializeToElement(new { temperature = 25.5 })
         };
         
         // Act
@@ -56,7 +57,7 @@ public class MessageValidationServiceTests
         {
             Type = MessageType.Publish,
             Subject = "",
-            Payload = new { data = "test" }
+            Payload = JsonSerializer.SerializeToElement(new { data = "test" })
         };
         
         // Act
@@ -90,7 +91,7 @@ public class MessageValidationServiceTests
         var message = new GatewayMessage
         {
             Type = MessageType.Auth,
-            Payload = new { deviceId = "test", token = "token" }
+            Payload = JsonSerializer.SerializeToElement(new { deviceId = "test", token = "token" })
         };
         
         // Act

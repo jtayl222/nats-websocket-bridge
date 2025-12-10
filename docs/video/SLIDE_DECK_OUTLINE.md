@@ -373,30 +373,27 @@ Pattern matching:
 **Visual: C# code snippet**
 
 ```csharp
-// Gateway startup configuration
+// Gateway startup configuration - JWT-based authentication
 
-services.AddSingleton<IDeviceAuthenticationService>(sp =>
-{
-    var auth = new InMemoryDeviceAuthenticationService(logger);
+// Configure JWT options
+services.Configure<JwtOptions>(
+    builder.Configuration.GetSection(JwtOptions.SectionName));
 
-    // Register devices with their permissions
-    auth.RegisterDevice(
-        id: "temp-sensor-001",
-        token: "secure-token-hash",
-        type: "sensor",
-        pubTopics: new[] { "factory.line1.temp" },
-        subTopics: new[] { "factory.line1.cmd.*" }
-    );
+// Register JWT authentication service
+services.AddSingleton<IJwtDeviceAuthService, JwtDeviceAuthService>();
 
-    return auth;
-});
+// JWT token contains device permissions:
+// - sub: device client ID
+// - role: device role (sensor, actuator, admin)
+// - pub: ["factory.line1.temp"] - allowed publish topics
+// - subscribe: ["factory.line1.cmd.*"] - allowed subscribe topics
 ```
 
 **Talking Points:**
-- In-memory for demo, production uses database/external
-- Each device registered with explicit permissions
-- Type helps categorize for monitoring
-- Token should be hashed in production
+- JWT-based authentication with embedded permissions
+- Permissions encoded in token claims
+- Topic patterns support wildcards (* and >)
+- Token expiration enforced automatically
 
 ---
 

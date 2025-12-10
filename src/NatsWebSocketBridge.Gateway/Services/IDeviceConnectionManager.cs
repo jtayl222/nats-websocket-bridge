@@ -11,52 +11,35 @@ public interface IDeviceConnectionManager
     /// <summary>
     /// Register a device connection
     /// </summary>
-    /// <param name="deviceId">Device ID</param>
-    /// <param name="device">Device info</param>
-    /// <param name="webSocket">WebSocket connection</param>
-    void RegisterConnection(string deviceId, DeviceInfo device, WebSocket webSocket);
-    
+    void RegisterConnection(DeviceContext context, WebSocket webSocket);
+
     /// <summary>
     /// Remove a device connection
     /// </summary>
-    /// <param name="deviceId">Device ID</param>
-    void RemoveConnection(string deviceId);
-    
+    void RemoveConnection(string clientId);
+
     /// <summary>
     /// Get a device's WebSocket connection
     /// </summary>
-    /// <param name="deviceId">Device ID</param>
-    /// <returns>WebSocket if connected, null otherwise</returns>
-    WebSocket? GetConnection(string deviceId);
-    
+    WebSocket? GetConnection(string clientId);
+
     /// <summary>
-    /// Get device info
+    /// Get device context
     /// </summary>
-    /// <param name="deviceId">Device ID</param>
-    /// <returns>Device info if connected, null otherwise</returns>
-    DeviceInfo? GetDeviceInfo(string deviceId);
-    
+    DeviceContext? GetDeviceContext(string clientId);
+
     /// <summary>
     /// Get all connected device IDs
     /// </summary>
-    /// <returns>List of connected device IDs</returns>
     IEnumerable<string> GetConnectedDevices();
-    
+
     /// <summary>
     /// Check if a device is connected
     /// </summary>
-    /// <param name="deviceId">Device ID</param>
-    /// <returns>True if connected</returns>
-    bool IsConnected(string deviceId);
-    
+    bool IsConnected(string clientId);
+
     /// <summary>
     /// Get the count of connected devices
     /// </summary>
     int ConnectionCount { get; }
-    
-    /// <summary>
-    /// Update last activity time for a device
-    /// </summary>
-    /// <param name="deviceId">Device ID</param>
-    void UpdateLastActivity(string deviceId);
 }
