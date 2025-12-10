@@ -159,10 +159,10 @@ sequenceDiagram
 
     Note over D,G: WebSocket connection established
 
-    D->>G: {"type":8,"payload":{"deviceId":"SENSOR-001","token":"xxx"}}
-    G->>A: ValidateCredentials(deviceId, token)
-    A-->>G: {success: true, permissions: [...]}
-    G-->>D: {"type":8,"payload":{"success":true,"device":{...}}}
+    D->>G: {"type":8,"payload":{"token":"<JWT>"}}
+    G->>A: ValidateToken(jwt)
+    A-->>G: DeviceContext {clientId, role, permissions}
+    G-->>D: {"type":8,"payload":{"success":true,"clientId":"SENSOR-001","role":"sensor"}}
 
     Note over D,G: Device authenticated, ready for messaging
 
@@ -413,11 +413,18 @@ Install and use for quick testing:
 # Install
 npm install -g wscat
 
+# First, generate a JWT token (gateway must be running in Development mode)
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"demo-device","publish":["telemetry.>"],"subscribe":["commands.demo-device.>"]}' \
+  | jq -r '.token')
+
 # Connect
-wscat -c ws://localhost:5008/ws
+wscat -c ws://localhost:5000/ws
 
 # Send messages (paste these one at a time)
-{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+# Replace <TOKEN> with your generated token
+{"type":8,"payload":{"token":"<TOKEN>"}}
 {"type":0,"subject":"telemetry.demo-device.temp","payload":{"value":23.5}}
 {"type":1,"subject":"commands.demo-device.>"}
 {"type":9}
@@ -432,23 +439,26 @@ More powerful alternative:
 brew install websocat
 
 # Connect with auto-reconnect
-websocat -t ws://localhost:5008/ws
+websocat -t ws://localhost:5000/ws
 
 # Connect and send from file
-cat messages.jsonl | websocat ws://localhost:5008/ws
+cat messages.jsonl | websocat ws://localhost:5000/ws
 ```
 
 ### Tool: Browser DevTools
 
 ```javascript
+// First get a token via: curl -X POST http://localhost:5000/dev/token -d '{"clientId":"browser-test"}'
+const TOKEN = '<paste your token here>';
+
 // Open browser console
-const ws = new WebSocket('ws://localhost:5008/ws');
+const ws = new WebSocket('ws://localhost:5000/ws');
 
 ws.onopen = () => {
     console.log('Connected');
     ws.send(JSON.stringify({
         type: 8,
-        payload: { deviceId: 'demo-device', token: 'demo-token' }
+        payload: { token: TOKEN }
     }));
 };
 
@@ -459,7 +469,7 @@ ws.onmessage = (event) => {
 ws.onerror = (error) => console.error('Error:', error);
 ws.onclose = (event) => console.log('Closed:', event.code, event.reason);
 
-// Send messages
+// Send messages (after auth succeeds)
 ws.send(JSON.stringify({type: 9})); // Ping
 ws.send(JSON.stringify({type: 0, subject: 'test.data', payload: {value: 42}}));
 ```
@@ -470,9 +480,10 @@ ws.send(JSON.stringify({type: 0, subject: 'test.data', payload: {value: 42}}));
 # Terminal 1: Subscribe to all NATS messages
 nats sub ">"
 
-# Terminal 2: Connect and publish via WebSocket
-wscat -c ws://localhost:5008/ws
-> {"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+# Terminal 2: Generate token and connect via WebSocket
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token -d '{"clientId":"demo-device"}' | jq -r '.token')
+wscat -c ws://localhost:5000/ws
+> {"type":8,"payload":{"token":"<TOKEN>"}}
 > {"type":0,"subject":"telemetry.demo-device.test","payload":{"hello":"world"}}
 
 # Watch Terminal 1 for the message
@@ -481,9 +492,11 @@ wscat -c ws://localhost:5008/ws
 ### Testing Subscriptions End-to-End
 
 ```bash
-# Terminal 1: Connect WebSocket and subscribe
-wscat -c ws://localhost:5008/ws
-> {"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+# Terminal 1: Generate token and connect WebSocket
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -d '{"clientId":"demo-device","subscribe":["commands.demo-device.>"]}' | jq -r '.token')
+wscat -c ws://localhost:5000/ws
+> {"type":8,"payload":{"token":"<TOKEN>"}}
 > {"type":1,"subject":"commands.demo-device.>"}
 
 # Terminal 2: Publish via NATS CLI
@@ -504,11 +517,10 @@ The tests use **NUnit** and **Moq** for mocking:
 
 ```
 tests/NatsWebSocketBridge.Tests/
-├── DeviceConnectionManagerTests.cs    # Connection tracking
-├── DeviceAuthenticationServiceTests.cs # Auth validation
-├── DeviceAuthorizationServiceTests.cs  # Permission checks
-├── MessageValidationServiceTests.cs    # Message format validation
-├── MessageBufferServiceTests.cs        # Outbound message buffering
+├── DeviceConnectionManagerTests.cs      # Connection tracking
+├── JwtDeviceAuthServiceTests.cs         # JWT validation & permissions
+├── MessageValidationServiceTests.cs     # Message format validation
+├── MessageBufferServiceTests.cs         # Outbound message buffering
 └── TokenBucketThrottlingServiceTests.cs # Rate limiting
 ```
 
@@ -604,11 +616,12 @@ public class WebSocketIntegrationTests : IAsyncLifetime
             new Uri("ws://localhost/ws"),
             CancellationToken.None);
 
-        // Send auth
+        // Send auth with JWT token
+        // In real tests, generate a valid token using JwtDeviceAuthService.GenerateToken()
         await SendMessageAsync(ws, new GatewayMessage
         {
             Type = MessageType.Auth,
-            Payload = new { deviceId = "test", token = "test-token" }
+            Payload = new { token = "<valid-jwt-token>" }
         });
 
         // Receive auth response
@@ -801,8 +814,11 @@ finally
 ### Message Format Cheat Sheet
 
 ```json
-// Auth
-{"type":8,"payload":{"deviceId":"xxx","token":"yyy"}}
+// Auth (with JWT token)
+{"type":8,"payload":{"token":"eyJhbGciOiJIUzI1NiIs..."}}
+
+// Auth Response (success)
+{"type":8,"payload":{"success":true,"clientId":"xxx","role":"sensor"}}
 
 // Publish
 {"type":0,"subject":"topic.name","payload":{...}}
@@ -820,13 +836,23 @@ finally
 {"type":7,"payload":{"error":"message"}}
 ```
 
-### Test Device Credentials
+### Generating Test Tokens
 
-| Device ID | Token | Permissions |
-|-----------|-------|-------------|
-| demo-device | demo-token | telemetry.>, factory.>, commands.> |
-| test-device | test-token | telemetry.>, test.>, commands.> |
-| SENSOR-001 | sensor-token | telemetry.SENSOR-001.>, commands.SENSOR-001.> |
+```bash
+# In Development mode, use the /dev/token endpoint:
+
+# Full access token
+curl -X POST http://localhost:5000/dev/token \
+  -d '{"clientId":"demo-device"}'
+
+# Sensor with limited permissions
+curl -X POST http://localhost:5000/dev/token \
+  -d '{"clientId":"SENSOR-001","role":"sensor","publish":["telemetry.SENSOR-001.>"],"subscribe":["commands.SENSOR-001.>"]}'
+
+# Token with custom expiry (2 hours)
+curl -X POST http://localhost:5000/dev/token \
+  -d '{"clientId":"short-lived","expiryHours":2}'
+```
 
 ### WebSocket Close Codes
 

@@ -9,7 +9,7 @@
 ## Learning Objectives
 
 By the end of this episode, viewers will understand:
-- WebSocket authentication flow with device credentials
+- WebSocket authentication flow with JWT tokens
 - Message format design (JSON envelope with numeric type codes)
 - Publish, subscribe, and request patterns for telemetry and commands
 - Error handling and reconnection strategies for factory floor reliability
@@ -23,9 +23,9 @@ By the end of this episode, viewers will understand:
 
 2. **Authentication Flow** (1:30-4:00)
    - Connection establishment
-   - AUTH message with credentials
+   - AUTH message with JWT token
    - AUTH_RESPONSE success/failure
-   - Token-based vs API key authentication
+   - JWT claims: clientId, role, permissions
    - Demo: Authentication sequence
 
 3. **Message Types** (4:00-7:00)
@@ -70,11 +70,11 @@ The protocol uses numeric message types for efficiency:
 | Pong | 10 | Server → Client | Keep-alive response |
 
 ```json
-// Authentication (type 8)
-{"type":8,"payload":{"deviceId":"SENSOR-001","token":"sensor-token"}}
+// Authentication with JWT (type 8)
+{"type":8,"payload":{"token":"eyJhbGciOiJIUzI1NiIs..."}}
 
 // Successful auth response
-{"type":8,"payload":{"success":true,"device":{"deviceId":"SENSOR-001","deviceType":"sensor"}}}
+{"type":8,"payload":{"success":true,"clientId":"SENSOR-001","role":"sensor"}}
 
 // Publish Telemetry (type 0)
 {"type":0,"subject":"factory.line1.sensor.temp","payload":{"value":23.5,"unit":"C"},"correlationId":"abc-123"}
@@ -86,17 +86,26 @@ The protocol uses numeric message types for efficiency:
 {"type":3,"subject":"commands.SENSOR-001.calibrate","payload":{"action":"calibrate","offset":0.5}}
 
 // Error Response (type 7)
-{"type":7,"payload":{"error":"Not authorized to publish to admin.system.restart"}}
+{"type":7,"payload":{"error":"Not authorized to publish to subject"}}
 ```
 
 ## Demo
 
 ```bash
+# Start gateway in development mode
+cd src/NatsWebSocketBridge.Gateway && dotnet run
+
+# Generate a JWT token for testing
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"demo-device","role":"sensor","publish":["telemetry.>","factory.>"],"subscribe":["commands.demo-device.>"]}' \
+  | jq -r '.token')
+
 # Connect and authenticate
 wscat -c ws://localhost:5000/ws
 
-# Send auth message (type 8 = Auth)
-{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+# Send auth message with JWT (type 8 = Auth)
+{"type":8,"payload":{"token":"<paste TOKEN here>"}}
 
 # Publish telemetry (type 0 = Publish)
 {"type":0,"subject":"telemetry.demo-device.temp","payload":{"value":23.5}}
@@ -108,10 +117,19 @@ wscat -c ws://localhost:5000/ws
 {"type":9}
 ```
 
-**Available test credentials:**
-- `demo-device` / `demo-token` - Broad permissions for testing
-- `SENSOR-001` / `sensor-token` - Sensor simulation
-- `test-device` / `test-token` - General testing
+**JWT Token Generation (Development only):**
+```bash
+# Default permissions (full access)
+curl -X POST http://localhost:5000/dev/token -d '{"clientId":"my-device"}'
+
+# Sensor with limited permissions
+curl -X POST http://localhost:5000/dev/token \
+  -d '{"clientId":"SENSOR-001","role":"sensor","publish":["telemetry.>"],"subscribe":["commands.SENSOR-001.>"]}'
+
+# Custom expiry (48 hours)
+curl -X POST http://localhost:5000/dev/token \
+  -d '{"clientId":"test","expiryHours":48}'
+```
 
 ## Key Visuals
 

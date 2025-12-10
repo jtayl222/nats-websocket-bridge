@@ -6,12 +6,19 @@
 # Terminal 1: Start NATS
 docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:latest -js -m 8222
 
-# Terminal 2: Start the Gateway
+# Terminal 2: Start the Gateway (Development mode for /dev/token endpoint)
 cd src/NatsWebSocketBridge.Gateway
 dotnet run
 
 # Terminal 3: Monitor NATS traffic
 nats sub ">"
+
+# Terminal 4: Generate a test token
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"SENSOR-001","role":"sensor","publish":["telemetry.>","factory.>"],"subscribe":["commands.SENSOR-001.>","factory.>"]}' \
+  | jq -r '.token')
+echo "Token: $TOKEN"
 ```
 
 ---
@@ -19,28 +26,29 @@ nats sub ">"
 ## Demo 1: Authentication Flow
 
 ```bash
-# Terminal 4: Connect with wscat
+# Terminal 5: Connect with wscat
 wscat -c ws://localhost:5000/ws
 
-# Connection established - now authenticate
+# Connection established - now authenticate with JWT
 # Message types: 0=Publish, 1=Subscribe, 8=Auth, 9=Ping, 7=Error
-# Type this in wscat (type 8 = Auth):
-{"type":8,"payload":{"deviceId":"SENSOR-001","token":"sensor-token"}}
+
+# Authenticate with JWT token (type 8 = Auth):
+# Replace <TOKEN> with the token generated in setup
+{"type":8,"payload":{"token":"<TOKEN>"}}
 
 # Expected response (type 8 with success):
-# {"type":8,"payload":{"success":true,"device":{"deviceId":"SENSOR-001","deviceType":"sensor",...}}}
+# {"type":8,"payload":{"success":true,"clientId":"SENSOR-001","role":"sensor"}}
 
-# Available demo devices:
-# demo-device / demo-token - broad permissions for testing
-# test-device / test-token - general testing
-# SENSOR-001 / sensor-token - sensor simulation
-# sensor-temp-001 / temp-sensor-token-001 - temperature sensor
+# Generate tokens for different devices using /dev/token:
+# curl -X POST http://localhost:5000/dev/token -d '{"clientId":"demo-device"}'
+# curl -X POST http://localhost:5000/dev/token -d '{"clientId":"sensor-temp-001","role":"sensor"}'
 ```
 
 **Talking Points:**
 - Connection is established but not authenticated yet
-- Device must send AUTH within timeout (default 30s)
-- Response includes permissions for this device
+- Device must send AUTH with valid JWT within timeout (default 30s)
+- JWT contains device ID, role, and permissions
+- Response confirms successful authentication
 
 ---
 
@@ -50,17 +58,21 @@ wscat -c ws://localhost:5000/ws
 # In a new wscat session:
 wscat -c ws://localhost:5000/ws
 
-# Send invalid credentials (wrong token)
-{"type":8,"payload":{"deviceId":"SENSOR-001","token":"wrong-token"}}
+# Send invalid token
+{"type":8,"payload":{"token":"invalid-token-here"}}
 
 # Expected response (type 8 with error):
-# {"type":8,"payload":{"success":false,"error":"Invalid token"}}
+# {"type":8,"payload":{"success":false,"error":"Token validation failed: ..."}}
 
 # Connection will be closed by gateway
 
-# Try unregistered device:
-{"type":8,"payload":{"deviceId":"unknown-device","token":"any-token"}}
-# Response: {"type":8,"payload":{"success":false,"error":"Device not registered"}}
+# Try expired token (generate one with short expiry):
+# curl -X POST http://localhost:5000/dev/token -d '{"clientId":"test","expiryHours":0}'
+# Response: {"type":8,"payload":{"success":false,"error":"Token expired"}}
+
+# Try missing token:
+{"type":8,"payload":{}}
+# Response: {"type":8,"payload":{"success":false,"error":"Token is required"}}
 ```
 
 ---
@@ -84,11 +96,18 @@ wscat -c ws://localhost:5000/ws
 ## Demo 4: Permission Enforcement
 
 ```bash
-# Try to publish to unauthorized subject (type 0 = Publish)
+# JWT permissions are enforced - try to publish to unauthorized subject
+# (If your token only has publish:["telemetry.>"])
+
+# Try to publish to admin subject (type 0 = Publish)
 {"type":0,"subject":"admin.system.restart","payload":{"force":true}}
 
 # Expected error response (type 7 = Error):
-# {"type":7,"payload":{"error":"Not authorized to publish to admin.system.restart"}}
+# {"type":7,"payload":{"error":"Not authorized to publish to subject"}}
+
+# Generate a token with limited permissions to test:
+# curl -X POST http://localhost:5000/dev/token \
+#   -d '{"clientId":"limited","publish":["telemetry.limited.>"],"subscribe":[]}'
 ```
 
 ---
@@ -102,7 +121,7 @@ wscat -c ws://localhost:5000/ws
 # Subscribe confirmation (type 6 = Ack):
 # {"type":6,"subject":"commands.SENSOR-001.>","correlationId":null,...}
 
-# Terminal 5: Send a command via NATS CLI
+# Terminal 6: Send a command via NATS CLI
 nats pub commands.SENSOR-001.calibrate '{"action":"calibrate","offset":0.5}'
 
 # Watch wscat for incoming MESSAGE (type 3):
@@ -133,7 +152,7 @@ nats pub factory.line1.alert '{"message":"Temperature high"}'
 # Note: Request/Response uses type 4 (Request)
 # This requires a NATS responder service
 
-# Terminal 5: Start a responder service first
+# Terminal 6: Start a responder service first
 nats reply services.config.get '{"sampling_rate":1000}'
 
 # In wscat, send a request (type 4 = Request)
@@ -245,7 +264,29 @@ nats pub factory.line1.alert '{"msg":"low pressure"}'
 
 ---
 
-## Demo 14: Graceful Disconnect
+## Demo 14: Token Expiration
+
+```bash
+# Generate a token that expires in 1 minute
+SHORT_TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"short-lived","expiryHours":0.016}' \
+  | jq -r '.token')
+
+# Connect and authenticate
+wscat -c ws://localhost:5000/ws
+{"type":8,"payload":{"token":"<SHORT_TOKEN>"}}
+
+# Wait ~1 minute, then try to publish
+{"type":0,"subject":"test.expired","payload":{}}
+
+# Expected: {"type":7,"payload":{"error":"Token expired"}}
+# Connection will be closed
+```
+
+---
+
+## Demo 15: Graceful Disconnect
 
 ```bash
 # Normal close (Ctrl+C in wscat)
@@ -258,17 +299,21 @@ nats pub factory.line1.alert '{"msg":"low pressure"}'
 
 ---
 
-## Demo 15: Protocol Documentation Check
+## Demo 16: View Connected Devices
 
 ```bash
-# View the message types enum in code
-cat Models/WebSocketMessage.cs
+# Check connected devices via API
+curl -s http://localhost:5000/devices | jq
 
-# View the handler routing
-grep -A 20 "switch.*Type" Services/WebSocketHandler.cs
-
-# Validate against documentation
-cat ../../../docs/api/WEBSOCKET_PROTOCOL.md
+# Expected output:
+# [
+#   {
+#     "clientId": "SENSOR-001",
+#     "role": "sensor",
+#     "connectedAt": "2024-01-15T10:30:00Z",
+#     "expiresAt": "2024-01-22T10:30:00Z"
+#   }
+# ]
 ```
 
 ---
@@ -290,17 +335,28 @@ docker stop nats && docker rm nats
 
 ### "Authentication failed" on every message
 - Ensure AUTH (type 8) is sent first after connection
-- Use correct format: `{"type":8,"payload":{"deviceId":"...","token":"..."}}`
-- Use registered device: demo-device/demo-token, SENSOR-001/sensor-token
+- Use correct format: `{"type":8,"payload":{"token":"<JWT>"}}`
+- Generate a fresh token: `curl -X POST http://localhost:5000/dev/token -d '{"clientId":"test"}'`
 - Verify response shows `"success":true`
 
+### "Token validation failed"
+- Check the JWT is properly formatted (3 parts separated by dots)
+- Verify the token was generated with the same secret as the gateway
+- Check token hasn't expired (exp claim)
+
 ### Messages not reaching NATS
-- Check subject matches device's allowed publish topics
+- Check subject matches device's JWT "pub" claim patterns
 - Verify NATS subscription pattern matches
 - Look at gateway logs for authorization errors
 
+### "Not authorized to publish/subscribe"
+- Check your JWT claims match the subject you're using
+- Use wildcards: `"pub": ["telemetry.>"]` allows `telemetry.sensor.temp`
+- Generate a new token with correct permissions
+
 ### Connection drops unexpectedly
 - Check for PING/PONG timeout (send type 9 to keep alive)
+- Check if token expired (use longer expiryHours)
 - Verify network stability
 - Check gateway idle timeout setting (default 30s auth timeout)
 

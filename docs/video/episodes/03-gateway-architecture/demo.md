@@ -70,26 +70,69 @@ nats sub "factory.line1.>"
 
 ---
 
-## Demo 5: Connect a WebSocket Client
+## Demo 5: Generate a JWT Token for Testing
+
+The gateway now uses JWT authentication. You need a valid JWT token to connect.
+
+```bash
+# In Development mode, the gateway provides a token generation endpoint
+# POST /dev/token
+
+# Generate a token for a demo device with full access:
+curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"demo-device","role":"sensor","publish":["telemetry.>","factory.>"],"subscribe":["commands.demo-device.>"]}' \
+  | jq -r '.token'
+
+# Generate a token with default permissions (full access):
+curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"demo-device"}' \
+  | jq -r '.token'
+
+# Generate a token with custom expiry (24 hours):
+curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"demo-device","expiryHours":24}' \
+  | jq -r '.token'
+
+# Save the token for use in demos:
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"demo-device","role":"sensor","publish":["telemetry.>","factory.>"],"subscribe":["commands.demo-device.>"]}' \
+  | jq -r '.token')
+echo $TOKEN
+```
+
+**Note:** The `/dev/token` endpoint is only available in Development mode for security reasons.
+
+---
+
+## Demo 6: Connect a WebSocket Client
 
 ```bash
 # Terminal 3: Connect with wscat
 wscat -c ws://localhost:5000/ws
 
-# After connection, authenticate (type 8 = Auth):
-{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+# After connection, authenticate with JWT (type 8 = Auth):
+# Replace <JWT_TOKEN> with the token generated in Demo 5
+{"type":8,"payload":{"token":"<JWT_TOKEN>"}}
 
 # Expected response:
-# {"type":8,"payload":{"success":true,"device":{"deviceId":"demo-device",...}}}
+# {"type":8,"payload":{"success":true,"clientId":"demo-device","role":"sensor"}}
 
-# Alternative devices to test:
-# {"type":8,"payload":{"deviceId":"SENSOR-001","token":"sensor-token"}}
-# {"type":8,"payload":{"deviceId":"sensor-temp-001","token":"temp-sensor-token-001"}}
+# Example with a real token (generate fresh one as shown above):
+{"type":8,"payload":{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."}}
 ```
+
+**Key Differences from Old Auth:**
+- Old: `{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}`
+- New: `{"type":8,"payload":{"token":"<JWT>"}}`
+- The JWT contains the device ID, role, and permissions
 
 ---
 
-## Demo 6: Publish Messages Through Gateway
+## Demo 7: Publish Messages Through Gateway
 
 ```bash
 # In wscat session, publish telemetry (type 0 = Publish):
@@ -103,11 +146,14 @@ wscat -c ws://localhost:5000/ws
 # Message Types Reference:
 # 0 = Publish, 1 = Subscribe, 2 = Unsubscribe, 3 = Message (incoming)
 # 8 = Auth, 9 = Ping, 10 = Pong, 7 = Error
+
+# Note: Publishing only works if the topic matches your JWT "pub" claim patterns
+# If unauthorized, you'll receive: {"type":7,"payload":{"error":"Not authorized to publish to subject"}}
 ```
 
 ---
 
-## Demo 7: Subscribe to Commands
+## Demo 8: Subscribe to Commands
 
 ```bash
 # In wscat session, subscribe to commands (type 1 = Subscribe):
@@ -120,11 +166,13 @@ wscat -c ws://localhost:5000/ws
 nats pub commands.demo-device.restart '{"action":"restart","force":false}'
 
 # Watch wscat for the incoming MESSAGE (type 3)
+
+# Note: Subscribing only works if the topic matches your JWT "subscribe" claim patterns
 ```
 
 ---
 
-## Demo 8: View Metrics
+## Demo 9: View Metrics
 
 ```bash
 # Check the metrics endpoint
@@ -141,25 +189,45 @@ curl -s http://localhost:5000/metrics | grep gateway_connections
 
 ---
 
-## Demo 9: Test Connection Limits
+## Demo 10: View Connected Devices
 
 ```bash
-# Note: For multiple connections, use pre-registered devices
-# The demo-device and test-device are available for testing
+# Check the devices endpoint
+curl -s http://localhost:5000/devices | jq
 
-# Connect with demo-device
-wscat -c ws://localhost:5000/ws -x '{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}'
-
-# In another terminal, connect with test-device
-wscat -c ws://localhost:5000/ws -x '{"type":8,"payload":{"deviceId":"test-device","token":"test-token"}}'
-
-# Check active connections
-curl -s http://localhost:5000/metrics | grep gateway_connections_active
+# Expected output:
+# [
+#   {
+#     "clientId": "demo-device",
+#     "role": "sensor",
+#     "connectedAt": "2024-01-15T10:30:00Z",
+#     "expiresAt": "2024-01-22T10:30:00Z"
+#   }
+# ]
 ```
 
 ---
 
-## Demo 10: Graceful Shutdown
+## Demo 11: Test Multiple Connections
+
+```bash
+# Generate tokens for different devices with different permissions
+
+# Device 1: Sensor (can publish telemetry, subscribe to commands)
+# JWT claims: sub="sensor-001", role="sensor", pub=["telemetry.>"], subscribe=["commands.sensor-001.>"]
+
+# Device 2: Actuator (can subscribe to commands, publish status)
+# JWT claims: sub="actuator-001", role="actuator", pub=["status.>"], subscribe=["commands.actuator-001.>"]
+
+# Device 3: Admin (full access)
+# JWT claims: sub="admin-001", role="admin", pub=["*"], subscribe=["*"]
+
+# Connect each in separate terminals and verify permissions are enforced
+```
+
+---
+
+## Demo 12: Graceful Shutdown
 
 ```bash
 # In Gateway terminal, press Ctrl+C
@@ -176,32 +244,32 @@ nats server info
 
 ---
 
-## Demo 11: Code Walkthrough - WebSocket Handler
+## Demo 13: Code Walkthrough - JWT Auth Service
 
 ```bash
-# Open the WebSocket handler
-cat Services/WebSocketHandler.cs
+# Open the JWT auth service
+cat Auth/JwtDeviceAuthService.cs
 
 # Key sections to highlight:
-# 1. HandleAsync method - main entry point
-# 2. ProcessMessagesAsync - message loop
-# 3. RouteMessageAsync - type-based dispatch
-# 4. Client tracking with ConcurrentDictionary
+# 1. ValidateToken - JWT validation and DeviceContext extraction
+# 2. CanPublish/CanSubscribe - Permission checking with wildcard support
+# 3. GenerateToken - For testing/development
+# 4. MatchesSubject - NATS wildcard pattern matching (* and >)
 ```
 
 ---
 
-## Demo 12: Code Walkthrough - NATS Service
+## Demo 14: Code Walkthrough - DeviceContext
 
 ```bash
-# Open the NATS service
-cat Services/NatsService.cs
+# Open the DeviceContext model
+cat Models/DeviceContext.cs
 
-# Key sections:
-# 1. Connection management
-# 2. PublishAsync with metrics
-# 3. SubscribeAsync with IAsyncEnumerable
-# 4. Error handling and logging
+# Key points:
+# 1. Immutable record with device identity
+# 2. AllowedPublish/AllowedSubscribe for authorization
+# 3. ExpiresAt for token expiration
+# 4. IsExpired computed property
 ```
 
 ---
@@ -245,6 +313,19 @@ curl -i -N \
   http://localhost:5000/ws
 ```
 
+### Authentication fails
+```bash
+# Check JWT token is valid
+# - Verify signature matches Jwt:Secret in appsettings.json
+# - Check token hasn't expired (exp claim)
+# - Verify issuer/audience match config
+
+# Common errors:
+# "Token is required" - payload.token is missing
+# "Token expired" - exp claim is in the past
+# "Token validation failed" - wrong secret or malformed JWT
+```
+
 ### Messages not appearing in NATS
 ```bash
 # Check if JetStream is consuming
@@ -252,4 +333,15 @@ nats consumer info TELEMETRY gateway-consumer
 
 # Check stream status
 nats stream info TELEMETRY
+```
+
+### Authorization denied
+```bash
+# Check your JWT claims:
+# - "pub" claim must include a pattern matching your publish subject
+# - "subscribe" claim must include a pattern matching your subscribe subject
+
+# Wildcard patterns:
+# "telemetry.>" matches telemetry.sensor.temp, telemetry.sensor.pressure, etc.
+# "telemetry.*" matches telemetry.sensor but NOT telemetry.sensor.temp
 ```

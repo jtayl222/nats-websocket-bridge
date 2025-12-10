@@ -25,12 +25,13 @@ docker-compose ps
 # Terminal 1: Start NATS
 docker run -d --name nats -p 4222:4222 nats:latest -js
 
-# Terminal 2: Start Gateway
+# Terminal 2: Start Gateway (Development mode)
 cd src/NatsWebSocketBridge.Gateway
 dotnet run
 
 # Gateway logs show:
 # [INF] Prometheus metrics enabled at /metrics
+# [WRN] Development token endpoint enabled at POST /dev/token
 # [INF] Gateway listening on http://0.0.0.0:5000
 ```
 
@@ -56,11 +57,18 @@ curl -s http://localhost:5000/metrics | grep gateway_connections
 ## Demo 3: Generate Traffic for Metrics
 
 ```bash
-# Terminal 3: Connect demo device
+# Terminal 3: Generate JWT token and connect
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"demo-device","role":"sensor","publish":["telemetry.>"],"subscribe":["commands.demo-device.>"]}' \
+  | jq -r '.token')
+echo "Token: $TOKEN"
+
+# Connect with wscat
 wscat -c ws://localhost:5000/ws
 
-# Authenticate (type 8 = Auth)
-{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+# Authenticate with JWT (type 8 = Auth)
+{"type":8,"payload":{"token":"<paste TOKEN here>"}}
 
 # Check connection metrics
 curl -s http://localhost:5000/metrics | grep gateway_connections_active
@@ -70,11 +78,6 @@ curl -s http://localhost:5000/metrics | grep gateway_connections_active
 
 # Check message metrics
 curl -s http://localhost:5000/metrics | grep gateway_messages
-
-# Available test devices:
-# demo-device / demo-token
-# SENSOR-001 / sensor-token
-# test-device / test-token
 ```
 
 ---
@@ -263,12 +266,13 @@ Annotations:
 ## Demo 12: Trigger an Alert
 
 ```bash
-# Connect and disconnect rapidly to trigger alert
-# Use demo-device with correct credentials
+# Generate tokens for multiple test connections
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -d '{"clientId":"alert-test"}' | jq -r '.token')
 
-# Connect
+# Connect and disconnect rapidly to trigger alert
 wscat -c ws://localhost:5000/ws
-{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+{"type":8,"payload":{"token":"<TOKEN>"}}
 # Disconnect (Ctrl+C)
 
 # Repeat several times rapidly
@@ -347,19 +351,41 @@ docker-compose logs -f gateway
 # Terminal 2: Watch metrics
 watch -n 1 'curl -s http://localhost:5000/metrics | grep gateway_connections'
 
-# Terminal 3: Generate traffic with wscat
+# Terminal 3: Generate traffic with JWT auth
+TOKEN=$(curl -s -X POST http://localhost:5000/dev/token \
+  -d '{"clientId":"load-test","publish":["telemetry.>"]}' | jq -r '.token')
+
 wscat -c ws://localhost:5000/ws
 
 # Authenticate
-{"type":8,"payload":{"deviceId":"demo-device","token":"demo-token"}}
+{"type":8,"payload":{"token":"<TOKEN>"}}
 
 # Send continuous telemetry
-{"type":0,"subject":"telemetry.demo-device.load","payload":{"i":1}}
-{"type":0,"subject":"telemetry.demo-device.load","payload":{"i":2}}
+{"type":0,"subject":"telemetry.load-test.data","payload":{"i":1}}
+{"type":0,"subject":"telemetry.load-test.data","payload":{"i":2}}
 # ... continue
 
 # Observe in Grafana dashboard
 open http://localhost:3000
+```
+
+---
+
+## Demo 16: View Connected Devices API
+
+```bash
+# Check connected devices via API
+curl -s http://localhost:5000/devices | jq
+
+# Expected output shows JWT-based context:
+# [
+#   {
+#     "clientId": "load-test",
+#     "role": "device",
+#     "connectedAt": "2024-01-15T10:30:00Z",
+#     "expiresAt": "2024-01-22T10:30:00Z"
+#   }
+# ]
 ```
 
 ---
@@ -407,4 +433,14 @@ curl http://admin:admin@localhost:3000/api/datasources
 
 # Test Prometheus connection
 curl http://admin:admin@localhost:3000/api/datasources/proxy/1/api/v1/query?query=up
+```
+
+### JWT Authentication Issues
+```bash
+# Generate a fresh token
+curl -X POST http://localhost:5000/dev/token -d '{"clientId":"test"}'
+
+# Check if /dev/token endpoint is available (only in Development mode)
+# If not available, ensure gateway is started with: dotnet run
+# The ASPNETCORE_ENVIRONMENT defaults to Development when using dotnet run
 ```

@@ -264,6 +264,24 @@ try
         return Results.Ok(consumers);
     }).WithName("GetJetStreamConsumers");
 
+    // Development-only: Generate JWT tokens for testing
+    if (app.Environment.IsDevelopment())
+    {
+        app.MapPost("/dev/token", (IJwtDeviceAuthService authService, TokenRequest request) =>
+        {
+            var token = authService.GenerateToken(
+                request.ClientId,
+                request.Role ?? "device",
+                request.Publish ?? new[] { ">" },
+                request.Subscribe ?? new[] { ">" },
+                request.ExpiryHours.HasValue ? TimeSpan.FromHours(request.ExpiryHours.Value) : null);
+
+            return Results.Ok(new { token });
+        }).WithName("GenerateDevToken");
+
+        Log.Warning("Development token endpoint enabled at POST /dev/token");
+    }
+
     Log.Information("Gateway started successfully");
     app.Run();
 }
@@ -275,3 +293,13 @@ finally
 {
     Log.CloseAndFlush();
 }
+
+/// <summary>
+/// Request model for generating development JWT tokens
+/// </summary>
+internal record TokenRequest(
+    string ClientId,
+    string? Role = null,
+    string[]? Publish = null,
+    string[]? Subscribe = null,
+    int? ExpiryHours = null);

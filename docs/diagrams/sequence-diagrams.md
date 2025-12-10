@@ -10,7 +10,7 @@ sequenceDiagram
     participant Device as Device<br/>(C++ SDK)
     participant WS as WebSocket<br/>Middleware
     participant Handler as Device<br/>WebSocket Handler
-    participant Auth as Authentication<br/>Service
+    participant Auth as JWT Auth<br/>Service
     participant ConnMgr as Connection<br/>Manager
     participant NATS as NATS<br/>JetStream
 
@@ -22,18 +22,18 @@ sequenceDiagram
 
     Note over Device,Handler: Authentication Phase (30s timeout)
 
-    Device->>Handler: {"type": 8, "payload": {"deviceId": "sensor-001", "token": "xxx", "deviceType": "sensor"}}
+    Device->>Handler: {"type": 8, "payload": {"token": "<JWT>"}}
 
-    Handler->>+Auth: AuthenticateAsync(request)
-    Auth->>Auth: Validate credentials
-    Auth->>Auth: Load device permissions
-    Auth-->>-Handler: AuthResponse {success: true, device: {...}}
+    Handler->>+Auth: ValidateToken(jwt)
+    Auth->>Auth: Verify JWT signature
+    Auth->>Auth: Extract claims (clientId, role, pub, subscribe)
+    Auth-->>-Handler: DeviceContext {ClientId, Role, AllowedPublish, AllowedSubscribe}
 
-    Handler->>+ConnMgr: RegisterDevice(deviceId, websocket)
+    Handler->>+ConnMgr: RegisterDevice(context, websocket)
     ConnMgr->>ConnMgr: Store connection
     ConnMgr-->>-Handler: OK
 
-    Handler-->>Device: {"type": 8, "payload": {"success": true, "device": {...}}}
+    Handler-->>Device: {"type": 8, "payload": {"success": true, "clientId": "sensor-001", "role": "sensor"}}
 
     Note over Device,NATS: Device is now authenticated and can publish/subscribe
 
@@ -50,18 +50,18 @@ sequenceDiagram
     autonumber
     participant Device as Device
     participant Handler as WebSocket Handler
-    participant Auth as Auth Service
+    participant Auth as JWT Auth Service
 
     Device->>Handler: WebSocket CONNECT
     Handler-->>Device: WebSocket ACCEPTED
 
-    Device->>Handler: {"type": 8, "payload": {"deviceId": "unknown", "token": "bad"}}
+    Device->>Handler: {"type": 8, "payload": {"token": "<invalid-jwt>"}}
 
-    Handler->>+Auth: AuthenticateAsync(request)
-    Auth->>Auth: Lookup device
-    Auth-->>-Handler: AuthResponse {success: false, error: "Device not registered"}
+    Handler->>+Auth: ValidateToken(jwt)
+    Auth->>Auth: Verify JWT signature
+    Auth-->>-Handler: null (validation failed)
 
-    Handler-->>Device: {"type": 8, "payload": {"success": false, "message": "Device not registered"}}
+    Handler-->>Device: {"type": 8, "payload": {"success": false, "error": "Token validation failed"}}
     Handler->>Handler: Close WebSocket (1008)
     Handler--xDevice: WebSocket CLOSED
 ```
@@ -336,8 +336,8 @@ sequenceDiagram
 
     GW-->>SDK: WebSocket ACCEPTED
 
-    SDK->>GW: {"type": 8, "payload": {"deviceId": "actuator-conveyor-001", ...}}
-    GW-->>SDK: {"type": 8, "payload": {"success": true, ...}}
+    SDK->>GW: {"type": 8, "payload": {"token": "<JWT>"}}
+    GW-->>SDK: {"type": 8, "payload": {"success": true, "clientId": "actuator-conveyor-001"}}
 
     SDK->>SDK: Resubscribe to previous topics
 
